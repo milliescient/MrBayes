@@ -1299,6 +1299,10 @@ typedef struct modelinfo
     int         numChars;                   /* number of compressed characters          */
     int         numUncompressedChars;       /* number of uncompressed characters        */
     int         numDummyChars;              /* number of dummy characters               */
+    int         numDummyClasses;            /* number of exact Mkv (states, ctype) classes */
+    int         dummyClassStates[2*MAX_STD_STATES];  /* number of states in each exact Mkv class  */
+    int         dummyClassType[2*MAX_STD_STATES];    /* ctype of each exact Mkv class             */
+    int         dummyClass[2*MAX_STD_STATES*MAX_STD_STATES]; /* exact Mkv class of each dummy */
     int         compMatrixStart;            /* start column in compressed matrix        */
     int         compMatrixStop;             /* stop column in compressed matrix         */
     int         compCharStart;              /* start char among compressed chars        */

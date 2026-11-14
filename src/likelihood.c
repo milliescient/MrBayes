@@ -7773,7 +7773,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 {
     int             b, c, j, k, nBetaCats, nRateCats, nStates, numReps;
     MrBFlt          catLike, catFreq, rateFreq, like, *bs, *bsBase,
-                    pUnobserved, pObserved;
+                    pUnobserved, pObserved, clsUnobs[2*MAX_STD_STATES], clsCount[2*MAX_STD_STATES];
+    int             cl;
     CLFlt           *clPtr, **clP, *lnScaler, *nSitesOfPat;
     ModelInfo       *m;
 
@@ -7811,6 +7812,9 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     
     *lnL = 0.0; /* reset lnL */
 
+    for (cl=0; cl<m->numDummyClasses; cl++)
+        clsUnobs[cl] = clsCount[cl] = 0.0;
+
     if (m->numBetaCats == 1)
         {
         pUnobserved = 0.0;
@@ -7829,6 +7833,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 clP[k] += nStates;
                 }
             pUnobserved += like *  exp(lnScaler[c]);
+            if (m->numDummyClasses > 0)
+                clsUnobs[m->dummyClass[c]] += like * exp(lnScaler[c]);
             }
 
         pObserved =  1.0 - pUnobserved;
@@ -7862,6 +7868,18 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
             else    
                 {
                 (*lnL) += (lnScaler[c] +  log(like)) * nSitesOfPat[c];
+                }
+            for (cl=0; cl<m->numDummyClasses; cl++)
+                if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
+                    break;
+            if (m->numDummyClasses > 0)
+                {
+                if (cl == m->numDummyClasses)
+                    {
+                    MrBayesPrint ("%s   MB_EXACT_MKV: Character %d has no dummy class\n", spacer, c);
+                    return ERROR;
+                    }
+                clsCount[cl] += nSitesOfPat[c];
                 }
             }
         }
@@ -7896,6 +7914,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 bs += nStates;
                 }
             pUnobserved += like *  exp(lnScaler[c]);
+            if (m->numDummyClasses > 0)
+                clsUnobs[m->dummyClass[c]] += like * exp(lnScaler[c]);
             }
 
         pObserved =  1.0 - pUnobserved;
@@ -7943,11 +7963,36 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 {
                 (*lnL) += (lnScaler[c] +  log(like)) * nSitesOfPat[c];
                 }
+            for (cl=0; cl<m->numDummyClasses; cl++)
+                if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
+                    break;
+            if (m->numDummyClasses > 0)
+                {
+                if (cl == m->numDummyClasses)
+                    {
+                    MrBayesPrint ("%s   MB_EXACT_MKV: Character %d has no dummy class\n", spacer, c);
+                    return ERROR;
+                    }
+                clsCount[cl] += nSitesOfPat[c];
+                }
             }
         }
 
     /* correct for absent characters */
-    (*lnL) -=  log(pObserved) * (m->numUncompressedChars);
+    if (m->numDummyClasses > 0)
+        {
+        for (cl=0; cl<m->numDummyClasses; cl++)
+            {
+            if (clsCount[cl] == 0.0)
+                continue;
+            pObserved = 1.0 - clsUnobs[cl];
+            if (pObserved < LIKE_EPSILON)
+                pObserved = LIKE_EPSILON;
+            (*lnL) -= log(pObserved) * clsCount[cl];
+            }
+        }
+    else
+        (*lnL) -=  log(pObserved) * (m->numUncompressedChars);
 
     return NO_ERROR;
 }
