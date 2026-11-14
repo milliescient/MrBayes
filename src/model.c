@@ -55,6 +55,7 @@
 /* local prototypes */
 int       AddDummyChars (void);
 int       ExactMkv (void);
+int       ExactInformative (void);
 void      AllocateCppEvents (Param *p);
 MCMCMove *AllocateMove (MoveType *moveType, Param *param);
 int       AllocateNormalParams (void);
@@ -174,6 +175,20 @@ int             *stateSize;                  /* # states for each compressed cha
 |   AddDummyChars: Add dummy characters to relevant partitions
 |
 ------------------------------------------------------------------------*/
+int ExactInformative (void)
+{
+    static int exact = -1;
+    if (exact == -1)
+        {
+        char *e = getenv ("MB_EXACT_INFORMATIVE");
+        exact = (e != NULL && strcmp (e, "1") == 0) ? YES : NO;
+        if (exact == YES)
+            MrBayesPrint ("%s   MB_EXACT_INFORMATIVE=1: coding=informative uses the exact k-state uninformative class\n", spacer);
+        }
+    return exact;
+}
+
+
 int ExactMkv (void)
 {
     static int exact = -1;
@@ -216,6 +231,29 @@ int AddDummyChars (void)
 
         m->numDummyChars = 0;
         m->numDummyClasses = 0;
+        m->exactInformative = NO;
+        if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No") && mp->coding == INFORMATIVE && ExactInformative() == YES)
+            {
+            if (strcmp(mp->symPiPr,"Fixed") != 0 || AreDoublesEqual(mp->symBetaFix, -1.0, 0.00001) == NO)
+                {
+                MrBayesPrint ("%s   MB_EXACT_INFORMATIVE requires equal state frequencies (symdirihyperpr=fixed(infinity))\n", spacer);
+                return (ERROR);
+                }
+            for (oldColumn=m->compMatrixStart; oldColumn<m->compMatrixStop; oldColumn++)
+                {
+                if (charInfo[origChar[oldColumn]].numStates > 2 && charInfo[origChar[oldColumn]].ctype != UNORD)
+                    {
+                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unordered multistate characters\n", spacer);
+                    return (ERROR);
+                    }
+                if (charInfo[origChar[oldColumn]].numStates > 8)
+                    {
+                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports at most 8 states\n", spacer);
+                    return (ERROR);
+                    }
+                }
+            m->exactInformative = YES;
+            }
 
         if (mp->dataType == RESTRICTION && !strcmp(mp->parsModel,"No"))
             {

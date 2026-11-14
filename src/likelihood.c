@@ -7763,6 +7763,128 @@ int Likelihood_Res_SSE (TreeNode *p, int division, int chain, MrBFlt *lnL, int w
 #endif
 
 
+
+#define UNINF_MAXK  8
+/*----------------------------------------------------------------
+|
+|   UninfMsg: branch message g(s',mask) = sum_s P(s'->s)
+|       f_q(s,mask) for unordered Mk with equal frequencies,
+|       where f_q is the probability of q's tips given state s
+|       at q, with background state 0 and distinct nonzero
+|       singleton states in mask (bit s-1 for state s)
+|
+-----------------------------------------------------------------*/
+static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, MrBFlt *out)
+{
+    int     s, t, mask, sub, nM = 1 << (k-1);
+    MrBFlt  f[UNINF_MAXK << (UNINF_MAXK-1)], gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)],
+            v, e, pSame, pDiff, sum;
+
+    for (s=0; s<k*nM; s++)
+        f[s] = 0.0;
+    if (asTip == YES || (q->left == NULL && q->right == NULL))
+        {
+        f[0] = 1.0;
+        for (s=1; s<k; s++)
+            f[s*nM + (1 << (s-1))] = 1.0;
+        }
+    else
+        {
+        UninfMsg (q->left, NO, q->left->length, rate, k, gl);
+        UninfMsg (q->right, NO, q->right->length, rate, k, gr);
+        for (s=0; s<k; s++)
+            for (mask=0; mask<nM; mask++)
+                {
+                sum = 0.0;
+                for (sub=mask; ; sub=(sub-1)&mask)
+                    {
+                    sum += gl[s*nM + sub] * gr[s*nM + (mask^sub)];
+                    if (sub == 0)
+                        break;
+                    }
+                f[s*nM + mask] = sum;
+                }
+        }
+    if (len > BRLENS_MAX)
+        len = BRLENS_MAX;
+    else if (len < BRLENS_MIN)
+        len = BRLENS_MIN;
+    v = len * rate;
+    e = exp (-(MrBFlt)k / (k - 1.0) * v);
+    pSame = 1.0 / k + (k - 1.0) / k * e;
+    pDiff = (1.0 - e) / k;
+    for (mask=0; mask<nM; mask++)
+        {
+        sum = 0.0;
+        for (t=0; t<k; t++)
+            sum += f[t*nM + mask];
+        for (s=0; s<k; s++)
+            out[s*nM + mask] = pDiff * sum + (pSame - pDiff) * f[s*nM + mask];
+        }
+}
+
+
+/*----------------------------------------------------------------
+|
+|   UninformativeProb: rate-category average probability of
+|       parsimony-uninformative k-state unordered patterns
+|       (at most one state in two or more taxa) on an
+|       unrooted tree with all tips scored
+|
+-----------------------------------------------------------------*/
+static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k)
+{
+    int     s, mask, sub, r, nM = 1 << (k-1), nRateCats;
+    MrBFlt  gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)], ga[UNINF_MAXK << (UNINF_MAXK-1)],
+            h, *catRate, theRate = 1.0, baseRate, total = 0.0, sum;
+    Tree    *t;
+    TreeNode *p;
+
+    t = GetTree (m->brlens, chain, state[chain]);
+    p = t->root->left;
+    baseRate = GetRate (division, chain);
+    if (m->shape != NULL)
+        catRate = GetParamSubVals (m->shape, chain, state[chain]);
+    else
+        catRate = &theRate;
+    nRateCats = m->numRateCats;
+    for (r=0; r<nRateCats; r++)
+        {
+        UninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, gl);
+        UninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, gr);
+        UninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, ga);   /* root at the outgroup tip */
+        sum = 0.0;
+        for (s=0; s<k; s++)
+            for (mask=0; mask<nM; mask++)
+                {
+                h = 0.0;   /* disjoint union of left, right and ancestral singleton sets */
+                for (sub=mask; ; sub=(sub-1)&mask)
+                    {
+                    int sub2, rest = mask ^ sub;
+                    MrBFlt lr = 0.0;
+                    for (sub2=sub; ; sub2=(sub2-1)&sub)
+                        {
+                        lr += gl[s*nM + sub2] * gr[s*nM + (sub^sub2)];
+                        if (sub2 == 0)
+                            break;
+                        }
+                    h += lr * ga[s*nM + rest];
+                    if (sub == 0)
+                        break;
+                    }
+                /* divide all-distinct patterns by the number of taxa */
+                {
+                int bits = 0, x;
+                for (x=mask; x; x &= x-1)
+                    bits++;
+                sum += (bits == numLocalTaxa - 1 ? h / numLocalTaxa : h) / k;
+                }
+                }
+        total += sum * k;   /* sum equal contributions from all k background states */
+        }
+    return total / nRateCats;
+}
+
 /*------------------------------------------------------------------
 |
 |   Likelihood_Std: variable states model with or without rate
@@ -7774,7 +7896,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     int             b, c, j, k, nBetaCats, nRateCats, nStates, numReps;
     MrBFlt          catLike, catFreq, rateFreq, like, *bs, *bsBase,
                     pUnobserved, pObserved, clsUnobs[2*MAX_STD_STATES], clsCount[2*MAX_STD_STATES];
-    int             cl;
+    int             cl, ns;
+    MrBFlt          infCount[MAX_STD_STATES+1];
     CLFlt           *clPtr, **clP, *lnScaler, *nSitesOfPat;
     ModelInfo       *m;
 
@@ -7814,6 +7937,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 
     for (cl=0; cl<m->numDummyClasses; cl++)
         clsUnobs[cl] = clsCount[cl] = 0.0;
+    for (ns=0; ns<=MAX_STD_STATES; ns++)
+        infCount[ns] = 0.0;
 
     if (m->numBetaCats == 1)
         {
@@ -7872,6 +7997,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
             for (cl=0; cl<m->numDummyClasses; cl++)
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
+            if (m->exactInformative == YES)
+                infCount[m->nStates[c]] += nSitesOfPat[c];
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -7966,6 +8093,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
             for (cl=0; cl<m->numDummyClasses; cl++)
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
+            if (m->exactInformative == YES)
+                infCount[m->nStates[c]] += nSitesOfPat[c];
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -7989,6 +8118,24 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
             if (pObserved < LIKE_EPSILON)
                 pObserved = LIKE_EPSILON;
             (*lnL) -= log(pObserved) * clsCount[cl];
+            }
+        }
+    else if (m->exactInformative == YES)
+        {
+        /* binary characters: MrBayes's dummies are exact; k > 2: the exact uninformative class */
+        if (GetTree (m->brlens, chain, state[chain])->isRooted == YES)
+            {
+            MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unrooted trees\n", spacer);
+            return ERROR;
+            }
+        for (ns=2; ns<=MAX_STD_STATES; ns++)
+            {
+            if (infCount[ns] == 0.0)
+                continue;
+            pObserved = 1.0 - (ns == 2 ? pUnobserved : UninformativeProb (m, chain, division, ns));
+            if (pObserved < LIKE_EPSILON)
+                pObserved = LIKE_EPSILON;
+            (*lnL) -= log(pObserved) * infCount[ns];
             }
         }
     else
