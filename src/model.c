@@ -232,6 +232,8 @@ int AddDummyChars (void)
         m->numDummyChars = 0;
         m->numDummyClasses = 0;
         m->exactInformative = NO;
+        m->numInfClasses = 0;
+        m->infClassOf = NULL;
         if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No") && mp->coding == INFORMATIVE && ExactInformative() == YES)
             {
             if (strcmp(mp->symPiPr,"Fixed") != 0 || AreDoublesEqual(mp->symBetaFix, -1.0, 0.00001) == NO)

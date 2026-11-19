@@ -7774,7 +7774,7 @@ int Likelihood_Res_SSE (TreeNode *p, int division, int chain, MrBFlt *lnL, int w
 |       singleton states in mask (bit s-1 for state s)
 |
 -----------------------------------------------------------------*/
-static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, MrBFlt *out)
+static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, const char *miss, MrBFlt *out)
 {
     int     s, t, mask, sub, nM = 1 << (k-1);
     MrBFlt  f[UNINF_MAXK << (UNINF_MAXK-1)], gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)],
@@ -7782,7 +7782,12 @@ static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, Mr
 
     for (s=0; s<k*nM; s++)
         f[s] = 0.0;
-    if (asTip == YES || (q->left == NULL && q->right == NULL))
+    if ((asTip == YES || (q->left == NULL && q->right == NULL)) && miss[q->index] == YES)
+        {
+        for (s=0; s<k; s++)
+            f[s*nM] = 1.0;
+        }
+    else if (asTip == YES || (q->left == NULL && q->right == NULL))
         {
         f[0] = 1.0;
         for (s=1; s<k; s++)
@@ -7790,8 +7795,8 @@ static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, Mr
         }
     else
         {
-        UninfMsg (q->left, NO, q->left->length, rate, k, gl);
-        UninfMsg (q->right, NO, q->right->length, rate, k, gr);
+        UninfMsg (q->left, NO, q->left->length, rate, k, miss, gl);
+        UninfMsg (q->right, NO, q->right->length, rate, k, miss, gr);
         for (s=0; s<k; s++)
             for (mask=0; mask<nM; mask++)
                 {
@@ -7829,10 +7834,10 @@ static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, Mr
 |   UninformativeProb: rate-category average probability of
 |       parsimony-uninformative k-state unordered patterns
 |       (at most one state in two or more taxa) on an
-|       unrooted tree with all tips scored
+|       unrooted tree with missing tips
 |
 -----------------------------------------------------------------*/
-static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k)
+static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k, const char *miss, int nObs)
 {
     int     s, mask, sub, r, nM = 1 << (k-1), nRateCats;
     MrBFlt  gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)], ga[UNINF_MAXK << (UNINF_MAXK-1)],
@@ -7850,9 +7855,9 @@ static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k)
     nRateCats = m->numRateCats;
     for (r=0; r<nRateCats; r++)
         {
-        UninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, gl);
-        UninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, gr);
-        UninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, ga);   /* root at the outgroup tip */
+        UninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, miss, gl);
+        UninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, miss, gr);
+        UninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, miss, ga);   /* root at the outgroup tip */
         sum = 0.0;
         for (s=0; s<k; s++)
             for (mask=0; mask<nM; mask++)
@@ -7872,12 +7877,13 @@ static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k)
                     if (sub == 0)
                         break;
                     }
-                /* divide all-distinct patterns by the number of taxa */
+                /* divide all-distinct patterns by the number of observed taxa */
                 {
                 int bits = 0, x;
                 for (x=mask; x; x &= x-1)
                     bits++;
-                sum += (bits == numLocalTaxa - 1 ? h / numLocalTaxa : h) / k;
+                if (bits < nObs)
+                    sum += (bits == nObs - 1 ? h / nObs : h) / k;
                 }
                 }
         total += sum * k;   /* sum equal contributions from all k background states */
@@ -7953,7 +7959,7 @@ static void OrdTiProbs (int k, MrBFlt v, MrBFlt *P)
 |       state om->a and singleton sets restricted to om
 |
 -----------------------------------------------------------------*/
-static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, OrdMasks *om, MrBFlt *out)
+static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, OrdMasks *om, const char *miss, MrBFlt *out)
 {
     int     s, t, i, mask, sub, n = om->n;
     MrBFlt  f[UNINF_MAXK*ORD_MAXMASKS], gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS],
@@ -7961,7 +7967,12 @@ static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k,
 
     for (i=0; i<k*n; i++)
         f[i] = 0.0;
-    if (asTip == YES || (q->left == NULL && q->right == NULL))
+    if ((asTip == YES || (q->left == NULL && q->right == NULL)) && miss[q->index] == YES)
+        {
+        for (s=0; s<k; s++)
+            f[s*n] = 1.0;
+        }
+    else if (asTip == YES || (q->left == NULL && q->right == NULL))
         {
         f[om->a*n] = 1.0;
         for (s=0; s<k; s++)
@@ -7970,8 +7981,8 @@ static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k,
         }
     else
         {
-        OrdUninfMsg (q->left, NO, q->left->length, rate, k, om, gl);
-        OrdUninfMsg (q->right, NO, q->right->length, rate, k, om, gr);
+        OrdUninfMsg (q->left, NO, q->left->length, rate, k, om, miss, gl);
+        OrdUninfMsg (q->right, NO, q->right->length, rate, k, om, miss, gr);
         for (s=0; s<k; s++)
             for (i=0; i<n; i++)
                 {
@@ -8007,10 +8018,10 @@ static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k,
 |   OrderedUninformativeProb: rate-category average probability
 |       of Wagner-uninformative k-state ordered patterns
 |       (no threshold between adjacent states with at least two
-|       taxa on each side) with all tips scored
+|       taxa on each side) with missing tips
 |
 -----------------------------------------------------------------*/
-static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, int k)
+static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, int k, const char *miss, int nObs)
 {
     int     a, b, s, i, mask, sub, sub2, rest, r, x, bits, below, above, smallest, nRateCats;
     MrBFlt  gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS], ga[UNINF_MAXK*ORD_MAXMASKS],
@@ -8031,17 +8042,17 @@ static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, i
         for (a=0; a<k; a++)
             {
             SetOrdMasks (k, a, &om);
-            OrdUninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, &om, gl);
-            OrdUninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, &om, gr);
-            OrdUninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, &om, ga);
+            OrdUninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, &om, miss, gl);
+            OrdUninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, &om, miss, gr);
+            OrdUninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, &om, miss, ga);
             for (i=0; i<om.n; i++)
                 {
                 mask = om.mask[i];
                 for (bits=0, x=mask; x; x &= x-1)
                     bits++;
-                if (bits >= numLocalTaxa)
+                if (bits >= nObs)
                     continue;
-                if (bits == numLocalTaxa - 1)
+                if (bits == nObs - 1)
                     {
                     /* count all-distinct patterns only for the smallest valid background */
                     smallest = -1;
@@ -8082,6 +8093,63 @@ static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, i
     return total / nRateCats;
 }
 
+
+/*----------------------------------------------------------------
+|
+|   BuildInfClasses: group exact informative characters by
+|       (states, ordered, missing taxa), treating '?', gaps and
+|       cells covering all states as missing
+|
+-----------------------------------------------------------------*/
+static int BuildInfClasses (ModelInfo *m)
+{
+    int         c, i, j, k, ord, nObs, col, full;
+    char        *miss;
+    BitsLong    v;
+
+    m->infClassOf = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->infClassK = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->infClassOrd = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->infClassObs = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->infClassMiss = (char *) SafeMalloc ((size_t)m->numChars * numLocalTaxa * sizeof(char));
+    m->infClassCount = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
+    miss = (char *) SafeMalloc ((size_t)numLocalTaxa * sizeof(char));
+    if (!m->infClassOf || !m->infClassK || !m->infClassOrd || !m->infClassObs || !m->infClassMiss || !m->infClassCount || !miss)
+        return ERROR;
+    m->numInfClasses = 0;
+    for (c=0; c<m->numChars; c++)
+        {
+        m->infClassOf[c] = -1;
+        if (c < m->numDummyChars)
+            continue;
+        k = m->nStates[c];
+        ord = (m->cType[c] == ORD && k > 2) ? YES : NO;
+        col = m->compMatrixStart + c;
+        full = (1 << k) - 1;
+        for (i=nObs=0; i<numLocalTaxa; i++)
+            {
+            v = compMatrix[pos(i, col, compMatrixRowSize)];
+            miss[i] = (v == MISSING || (v & GAP) || (int)(v & full) == full) ? YES : NO;
+            if (miss[i] == NO)
+                nObs++;
+            }
+        for (j=0; j<m->numInfClasses; j++)
+            if (m->infClassK[j] == k && m->infClassOrd[j] == ord && memcmp (m->infClassMiss + j*numLocalTaxa, miss, numLocalTaxa) == 0)
+                break;
+        if (j == m->numInfClasses)
+            {
+            m->infClassK[j] = k;
+            m->infClassOrd[j] = ord;
+            m->infClassObs[j] = nObs;
+            memcpy (m->infClassMiss + j*numLocalTaxa, miss, numLocalTaxa);
+            m->numInfClasses++;
+            }
+        m->infClassOf[c] = j;
+        }
+    free (miss);
+    return NO_ERROR;
+}
+
 /*------------------------------------------------------------------
 |
 |   Likelihood_Std: variable states model with or without rate
@@ -8093,8 +8161,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     int             b, c, j, k, nBetaCats, nRateCats, nStates, numReps;
     MrBFlt          catLike, catFreq, rateFreq, like, *bs, *bsBase,
                     pUnobserved, pObserved, clsUnobs[2*MAX_STD_STATES], clsCount[2*MAX_STD_STATES];
-    int             cl, ns;
-    MrBFlt          infCount[MAX_STD_STATES+1], infCountOrd[MAX_STD_STATES+1];
+    int             cl;
     CLFlt           *clPtr, **clP, *lnScaler, *nSitesOfPat;
     ModelInfo       *m;
 
@@ -8134,8 +8201,13 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 
     for (cl=0; cl<m->numDummyClasses; cl++)
         clsUnobs[cl] = clsCount[cl] = 0.0;
-    for (ns=0; ns<=MAX_STD_STATES; ns++)
-        infCount[ns] = infCountOrd[ns] = 0.0;
+    if (m->exactInformative == YES)
+        {
+        if (m->infClassOf == NULL && BuildInfClasses (m) == ERROR)
+            return ERROR;
+        for (cl=0; cl<m->numInfClasses; cl++)
+            m->infClassCount[cl] = 0.0;
+        }
 
     if (m->numBetaCats == 1)
         {
@@ -8195,12 +8267,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
             if (m->exactInformative == YES)
-                {
-                if (m->cType[c] == ORD && m->nStates[c] > 2)
-                    infCountOrd[m->nStates[c]] += nSitesOfPat[c];
-                else
-                    infCount[m->nStates[c]] += nSitesOfPat[c];
-                }
+                m->infClassCount[m->infClassOf[c]] += nSitesOfPat[c];
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -8296,12 +8363,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
             if (m->exactInformative == YES)
-                {
-                if (m->cType[c] == ORD && m->nStates[c] > 2)
-                    infCountOrd[m->nStates[c]] += nSitesOfPat[c];
-                else
-                    infCount[m->nStates[c]] += nSitesOfPat[c];
-                }
+                m->infClassCount[m->infClassOf[c]] += nSitesOfPat[c];
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -8329,29 +8391,24 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
         }
     else if (m->exactInformative == YES)
         {
-        /* binary characters: MrBayes's dummies are exact; k > 2: the exact uninformative class */
+        /* subtract log(1 - P(uninformative)) for each class */
         if (GetTree (m->brlens, chain, state[chain])->isRooted == YES)
             {
             MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unrooted trees\n", spacer);
             return ERROR;
             }
-        for (ns=2; ns<=MAX_STD_STATES; ns++)
+        for (cl=0; cl<m->numInfClasses; cl++)
             {
-            if (infCount[ns] == 0.0)
+            char *miss = m->infClassMiss + cl*numLocalTaxa;
+            if (m->infClassCount[cl] == 0.0)
                 continue;
-            pObserved = 1.0 - (ns == 2 ? pUnobserved : UninformativeProb (m, chain, division, ns));
+            if (m->infClassOrd[cl] == YES)
+                pObserved = 1.0 - OrderedUninformativeProb (m, chain, division, m->infClassK[cl], miss, m->infClassObs[cl]);
+            else
+                pObserved = 1.0 - UninformativeProb (m, chain, division, m->infClassK[cl], miss, m->infClassObs[cl]);
             if (pObserved < LIKE_EPSILON)
                 pObserved = LIKE_EPSILON;
-            (*lnL) -= log(pObserved) * infCount[ns];
-            }
-        for (ns=3; ns<=MAX_STD_STATES; ns++)
-            {
-            if (infCountOrd[ns] == 0.0)
-                continue;
-            pObserved = 1.0 - OrderedUninformativeProb (m, chain, division, ns);
-            if (pObserved < LIKE_EPSILON)
-                pObserved = LIKE_EPSILON;
-            (*lnL) -= log(pObserved) * infCountOrd[ns];
+            (*lnL) -= log(pObserved) * m->infClassCount[cl];
             }
         }
     else

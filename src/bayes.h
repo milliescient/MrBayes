@@ -1301,6 +1301,11 @@ typedef struct modelinfo
     int         numDummyChars;              /* number of dummy characters               */
     int         numDummyClasses;            /* number of exact Mkv (states, ctype) classes */
     int         exactInformative;           /* exact informative correction (MB_EXACT_INFORMATIVE) */
+    int         numInfClasses;              /* number of exact informative classes      */
+    int         *infClassOf;                /* exact informative class of each character */
+    int         *infClassK, *infClassOrd, *infClassObs;
+    char        *infClassMiss;              /* missing taxa of each exact informative class */
+    MrBFlt      *infClassCount;
     int         dummyClassStates[2*MAX_STD_STATES];  /* number of states in each exact Mkv class  */
     int         dummyClassType[2*MAX_STD_STATES];    /* ctype of each exact Mkv class             */
     int         dummyClass[2*MAX_STD_STATES*MAX_STD_STATES]; /* exact Mkv class of each dummy */
