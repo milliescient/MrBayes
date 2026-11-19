@@ -474,6 +474,7 @@ typedef float CLFlt;        /* single-precision float used for cond likes (CLFlt
 #define MAX_NUM_USERTREES       200     /* maximum number of user trees MrBayes will read */
 #define MAX_CHAINS              256     /* maximum number of chains you can run actually only half of it because of m->lnLike[MAX_CHAINS] */
 #define MAX_STD_STATES          24      // 0-9 A-N
+#define MAX_EXACT_INF_STATES    8       // exact informative correction
 
 // #define PARAM_NAME_SIZE      400
 
@@ -1299,16 +1300,16 @@ typedef struct modelinfo
     int         numChars;                   /* number of compressed characters          */
     int         numUncompressedChars;       /* number of uncompressed characters        */
     int         numDummyChars;              /* number of dummy characters               */
-    int         numDummyClasses;            /* number of exact Mkv (states, ctype) classes */
-    int         exactInformative;           /* exact informative correction (MB_EXACT_INFORMATIVE) */
-    int         numInfClasses;              /* number of exact informative classes      */
-    int         *infClassOf;                /* exact informative class of each character */
-    int         *infClassK, *infClassOrd, *infClassObs;
-    char        *infClassMiss;              /* missing taxa of each exact informative class */
-    MrBFlt      *infClassCount;
-    int         dummyClassStates[2*MAX_STD_STATES];  /* number of states in each exact Mkv class  */
-    int         dummyClassType[2*MAX_STD_STATES];    /* ctype of each exact Mkv class             */
-    int         dummyClass[2*MAX_STD_STATES*MAX_STD_STATES]; /* exact Mkv class of each dummy */
+    int         exactAsc;                   /* coding with an exact correction or NO    */
+    int         numAscClasses;              /* number of exact correction classes       */
+    int         *ascClassOf;                /* exact correction class of each character */
+    int         *ascClassChar;              /* representative character of each class   */
+    int         *ascClassK, *ascClassMode, *ascClassObs;
+    char        *ascClassMiss;              /* missing taxa of each class               */
+    MrBFlt      *ascClassCount;             /* number of characters in each class       */
+    MrBFlt      *ascCache;                  /* f of each class in each cond like slot   */
+    size_t      *ascClassOffset, ascSlotSize;
+    MrBFlt      *ascWork, *ascSiteLike;     /* scratch and site likelihoods for checks  */
     int         compMatrixStart;            /* start column in compressed matrix        */
     int         compMatrixStop;             /* stop column in compressed matrix         */
     int         compCharStart;              /* start char among compressed chars        */

@@ -172,7 +172,7 @@ int             *stateSize;                  /* # states for each compressed cha
 
 /*-----------------------------------------------------------------------
 |
-|   AddDummyChars: Add dummy characters to relevant partitions
+|   ExactInformative: YES if MB_EXACT_INFORMATIVE=1
 |
 ------------------------------------------------------------------------*/
 int ExactInformative (void)
@@ -183,12 +183,17 @@ int ExactInformative (void)
         char *e = getenv ("MB_EXACT_INFORMATIVE");
         exact = (e != NULL && strcmp (e, "1") == 0) ? YES : NO;
         if (exact == YES)
-            MrBayesPrint ("%s   MB_EXACT_INFORMATIVE=1: coding=informative uses the exact k-state uninformative class\n", spacer);
+            MrBayesPrint ("%s   MB_EXACT_INFORMATIVE=1: coding=informative uses the exact uninformative-pattern probability of each character\n", spacer);
         }
     return exact;
 }
 
 
+/*-----------------------------------------------------------------------
+|
+|   ExactMkv: YES if MB_EXACT_MKV=1
+|
+------------------------------------------------------------------------*/
 int ExactMkv (void)
 {
     static int exact = -1;
@@ -197,12 +202,17 @@ int ExactMkv (void)
         char *e = getenv ("MB_EXACT_MKV");
         exact = (e != NULL && strcmp (e, "1") == 0) ? YES : NO;
         if (exact == YES)
-            MrBayesPrint ("%s   MB_EXACT_MKV=1: coding=variable uses one constant dummy per state in each (states, ctype) class\n", spacer);
+            MrBayesPrint ("%s   MB_EXACT_MKV=1: coding=variable uses the exact constant-pattern probability of each character\n", spacer);
         }
     return exact;
 }
 
 
+/*-----------------------------------------------------------------------
+|
+|   AddDummyChars: Add dummy characters to relevant partitions
+|
+------------------------------------------------------------------------*/
 int AddDummyChars (void)
 {
     int         i, j, k, d, numIncompatible, numDeleted, oldRowSize,
@@ -230,31 +240,22 @@ int AddDummyChars (void)
         mp = &modelParams[d];
 
         m->numDummyChars = 0;
-        m->numDummyClasses = 0;
-        m->exactInformative = NO;
-        m->numInfClasses = 0;
-        m->infClassOf = NULL;
-        if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No") && mp->coding == INFORMATIVE && ExactInformative() == YES)
+        m->exactAsc = NO;
+        m->numAscClasses = 0;
+        m->ascClassOf = NULL;
+        if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No")
+            && ((mp->coding == VARIABLE && ExactMkv() == YES) || (mp->coding == INFORMATIVE && ExactInformative() == YES)))
             {
-            if (strcmp(mp->symPiPr,"Fixed") != 0 || AreDoublesEqual(mp->symBetaFix, -1.0, 0.00001) == NO)
+            if (mp->coding == INFORMATIVE)
                 {
-                MrBayesPrint ("%s   MB_EXACT_INFORMATIVE requires equal state frequencies (symdirihyperpr=fixed(infinity))\n", spacer);
-                return (ERROR);
+                for (oldColumn=m->compMatrixStart; oldColumn<m->compMatrixStop; oldColumn++)
+                    if (charInfo[origChar[oldColumn]].numStates > MAX_EXACT_INF_STATES)
+                        {
+                        MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports at most %d states\n", spacer, MAX_EXACT_INF_STATES);
+                        return (ERROR);
+                        }
                 }
-            for (oldColumn=m->compMatrixStart; oldColumn<m->compMatrixStop; oldColumn++)
-                {
-                if (charInfo[origChar[oldColumn]].numStates > 2 && charInfo[origChar[oldColumn]].ctype != UNORD && charInfo[origChar[oldColumn]].ctype != ORD)
-                    {
-                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unordered and ordered multistate characters\n", spacer);
-                    return (ERROR);
-                    }
-                if (charInfo[origChar[oldColumn]].numStates > 8)
-                    {
-                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports at most 8 states\n", spacer);
-                    return (ERROR);
-                    }
-                }
-            m->exactInformative = YES;
+            m->exactAsc = mp->coding;
             }
 
         if (mp->dataType == RESTRICTION && !strcmp(mp->parsModel,"No"))
@@ -269,40 +270,7 @@ int AddDummyChars (void)
                 m->numDummyChars += numLocalTaxa;
             }
 
-        if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No") && mp->coding == VARIABLE && ExactMkv() == YES)
-            {
-            /* one constant dummy per state in each exact Mkv class */
-            if (strcmp(mp->symPiPr,"Fixed") != 0 || AreDoublesEqual(mp->symBetaFix, -1.0, 0.00001) == NO)
-                {
-                MrBayesPrint ("%s   MB_EXACT_MKV requires equal state frequencies (symdirihyperpr=fixed(infinity))\n", spacer);
-                return (ERROR);
-                }
-            for (oldColumn=m->compMatrixStart; oldColumn<m->compMatrixStop; oldColumn++)
-                {
-                int ns = charInfo[origChar[oldColumn]].numStates, ct = charInfo[origChar[oldColumn]].ctype, cl;
-                if (ns < 2)
-                    ns = 2;
-                if (ct != UNORD && ct != ORD)
-                    {
-                    MrBayesPrint ("%s   MB_EXACT_MKV supports only unordered and ordered characters\n", spacer);
-                    return (ERROR);
-                    }
-                if (ns == 2)
-                    ct = UNORD;
-                for (cl=0; cl<m->numDummyClasses; cl++)
-                    if (m->dummyClassStates[cl] == ns && m->dummyClassType[cl] == ct)
-                        break;
-                if (cl == m->numDummyClasses)
-                    {
-                    m->dummyClassStates[cl] = ns;
-                    m->dummyClassType[cl] = ct;
-                    m->numDummyClasses++;
-                    for (i=0; i<ns; i++)
-                        m->dummyClass[m->numDummyChars++] = cl;
-                    }
-                }
-            }
-        else if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No"))
+        if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No"))
             {
             if (mp->coding & VARIABLE)
                 m->numDummyChars += 2;
@@ -384,23 +352,7 @@ int AddDummyChars (void)
                     }
                 }
 
-            if (m->numDummyClasses > 0)
-                {
-                /* exact Mkv dummy c is constant in state c minus its class's first dummy */
-                for (k=0; k<m->numDummyChars; k++)
-                    {
-                    int first = 0;
-                    while (m->dummyClass[first] != m->dummyClass[k])
-                        first++;
-                    for (i=0; i<numLocalTaxa; i++)
-                        tempMatrix[pos(i,newColumn,newRowSize)] = bitsLongOne << (k - first);
-                    tempSitesOfPat[newChar] = 0;
-                    tempChar[newColumn] = -1;
-                    newChar++;
-                    newColumn++;
-                    }
-                }
-            else if (mp->coding & NOABSENCESITES)
+            if (mp->coding & NOABSENCESITES)
                 {
                 for (i=0; i<numLocalTaxa; i++)
                     tempMatrix[pos(i,newColumn,newRowSize)] = 1;
@@ -410,7 +362,7 @@ int AddDummyChars (void)
                 newColumn++;
                 }
 
-            if (m->numDummyClasses == 0 && (mp->coding & NOPRESENCESITES))
+            if (mp->coding & NOPRESENCESITES)
                 {
                 for (i=0; i<numLocalTaxa; i++)
                     tempMatrix[pos(i,newColumn,newRowSize)] = 2;
@@ -16440,16 +16392,8 @@ int ProcessStdChars (RandLong *seed)
             if (origChar[c+m->compMatrixStart] < 0)
                 {
                 /* this is a dummy character */
-                if (m->numDummyClasses > 0)
-                    {
-                    m->cType[c] = m->dummyClassType[m->dummyClass[c]];
-                    m->nStates[c] = m->dummyClassStates[m->dummyClass[c]];
-                    }
-                else
-                    {
-                    m->cType[c] = UNORD;
-                    m->nStates[c] = 2;
-                    }
+                m->cType[c] = UNORD;
+                m->nStates[c] = 2;
                 }
             else
                 {

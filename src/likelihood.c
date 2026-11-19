@@ -7764,157 +7764,49 @@ int Likelihood_Res_SSE (TreeNode *p, int division, int chain, MrBFlt *lnL, int w
 
 
 
-#define UNINF_MAXK  8
-/*----------------------------------------------------------------
-|
-|   UninfMsg: branch message g(s',mask) = sum_s P(s'->s)
-|       f_q(s,mask) for unordered Mk with equal frequencies,
-|       where f_q is the probability of q's tips given state s
-|       at q, with background state 0 and distinct nonzero
-|       singleton states in mask (bit s-1 for state s)
-|
------------------------------------------------------------------*/
-static void UninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, const char *miss, MrBFlt *out)
-{
-    int     s, t, mask, sub, nM = 1 << (k-1);
-    MrBFlt  f[UNINF_MAXK << (UNINF_MAXK-1)], gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)],
-            v, e, pSame, pDiff, sum;
+#define ASC_MAXMASKS    (1 << (MAX_EXACT_INF_STATES-1))
+#define ASC_SLOT        (MAX_STD_STATES * ASC_MAXMASKS)
+#define ASC_CONSTANT    0
+#define ASC_SINGLETONS  1
+#define ASC_WAGNER      2
 
-    for (s=0; s<k*nM; s++)
-        f[s] = 0.0;
-    if ((asTip == YES || (q->left == NULL && q->right == NULL)) && miss[q->index] == YES)
-        {
-        for (s=0; s<k; s++)
-            f[s*nM] = 1.0;
-        }
-    else if (asTip == YES || (q->left == NULL && q->right == NULL))
-        {
-        f[0] = 1.0;
-        for (s=1; s<k; s++)
-            f[s*nM + (1 << (s-1))] = 1.0;
-        }
-    else
-        {
-        UninfMsg (q->left, NO, q->left->length, rate, k, miss, gl);
-        UninfMsg (q->right, NO, q->right->length, rate, k, miss, gr);
-        for (s=0; s<k; s++)
-            for (mask=0; mask<nM; mask++)
-                {
-                sum = 0.0;
-                for (sub=mask; ; sub=(sub-1)&mask)
-                    {
-                    sum += gl[s*nM + sub] * gr[s*nM + (mask^sub)];
-                    if (sub == 0)
-                        break;
-                    }
-                f[s*nM + mask] = sum;
-                }
-        }
-    if (len > BRLENS_MAX)
-        len = BRLENS_MAX;
-    else if (len < BRLENS_MIN)
-        len = BRLENS_MIN;
-    v = len * rate;
-    e = exp (-(MrBFlt)k / (k - 1.0) * v);
-    pSame = 1.0 / k + (k - 1.0) / k * e;
-    pDiff = (1.0 - e) / k;
-    for (mask=0; mask<nM; mask++)
-        {
-        sum = 0.0;
-        for (t=0; t<k; t++)
-            sum += f[t*nM + mask];
-        for (s=0; s<k; s++)
-            out[s*nM + mask] = pDiff * sum + (pSame - pDiff) * f[s*nM + mask];
-        }
-}
-
-
-/*----------------------------------------------------------------
-|
-|   UninformativeProb: rate-category average probability of
-|       parsimony-uninformative k-state unordered patterns
-|       (at most one state in two or more taxa) on an
-|       unrooted tree with missing tips
-|
------------------------------------------------------------------*/
-static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k, const char *miss, int nObs)
-{
-    int     s, mask, sub, r, nM = 1 << (k-1), nRateCats;
-    MrBFlt  gl[UNINF_MAXK << (UNINF_MAXK-1)], gr[UNINF_MAXK << (UNINF_MAXK-1)], ga[UNINF_MAXK << (UNINF_MAXK-1)],
-            h, *catRate, theRate = 1.0, baseRate, total = 0.0, sum;
-    Tree    *t;
-    TreeNode *p;
-
-    t = GetTree (m->brlens, chain, state[chain]);
-    p = t->root->left;
-    baseRate = GetRate (division, chain);
-    if (m->shape != NULL)
-        catRate = GetParamSubVals (m->shape, chain, state[chain]);
-    else
-        catRate = &theRate;
-    nRateCats = m->numRateCats;
-    for (r=0; r<nRateCats; r++)
-        {
-        UninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, miss, gl);
-        UninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, miss, gr);
-        UninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, miss, ga);   /* root at the outgroup tip */
-        sum = 0.0;
-        for (s=0; s<k; s++)
-            for (mask=0; mask<nM; mask++)
-                {
-                h = 0.0;   /* disjoint union of left, right and ancestral singleton sets */
-                for (sub=mask; ; sub=(sub-1)&mask)
-                    {
-                    int sub2, rest = mask ^ sub;
-                    MrBFlt lr = 0.0;
-                    for (sub2=sub; ; sub2=(sub2-1)&sub)
-                        {
-                        lr += gl[s*nM + sub2] * gr[s*nM + (sub^sub2)];
-                        if (sub2 == 0)
-                            break;
-                        }
-                    h += lr * ga[s*nM + rest];
-                    if (sub == 0)
-                        break;
-                    }
-                /* divide all-distinct patterns by the number of observed taxa */
-                {
-                int bits = 0, x;
-                for (x=mask; x; x &= x-1)
-                    bits++;
-                if (bits < nObs)
-                    sum += (bits == nObs - 1 ? h / nObs : h) / k;
-                }
-                }
-        total += sum * k;   /* sum equal contributions from all k background states */
-        }
-    return total / nRateCats;
-}
-
-
-#define ORD_MAXMASKS    32
-/*----------------------------------------------------------------
-|
-|   SetOrdMasks: Wagner-uninformative singleton sets with at
-|       most one state below background a and one above,
-|       with idx mapping each set to its slot or -1
-|
------------------------------------------------------------------*/
 typedef struct
     {
-    int     a, n, mask[ORD_MAXMASKS], idx[1 << UNINF_MAXK];
-    } OrdMasks;
+    int     a, n, mask[ASC_MAXMASKS], idx[1 << MAX_EXACT_INF_STATES];
+    } AscMasks;
 
-static void SetOrdMasks (int k, int a, OrdMasks *om)
+#define ASC_IDX(om,x)   ((om)->n == 1 ? 0 : (om)->idx[x])
+
+
+/*----------------------------------------------------------------
+|
+|   SetAscMasks: singleton state sets allowed with background
+|       state a: none (constant patterns), any set of other
+|       states, or at most one state below a and one above
+|
+-----------------------------------------------------------------*/
+static void SetAscMasks (int k, int a, int mode, AscMasks *om)
 {
     int     x, lo, hi;
 
     om->a = a;
+    om->n = 1;
+    om->mask[0] = 0;
+    if (mode == ASC_CONSTANT)
+        return;
     for (x=0; x<(1 << k); x++)
         om->idx[x] = -1;
-    om->n = 0;
-    om->idx[0] = om->n;
-    om->mask[om->n++] = 0;
+    om->idx[0] = 0;
+    if (mode == ASC_SINGLETONS)
+        {
+        for (x=1; x<(1 << k); x++)
+            if ((x & (1 << a)) == 0)
+                {
+                om->idx[x] = om->n;
+                om->mask[om->n++] = x;
+                }
+        return;
+        }
     for (x=0; x<k; x++)
         if (x != a)
             {
@@ -7932,76 +7824,88 @@ static void SetOrdMasks (int k, int a, OrdMasks *om)
 
 /*----------------------------------------------------------------
 |
-|   OrdTiProbs: ordered k-state Mk transition probabilities
-|       with equal frequencies and mean rate 1
+|   AscMaxMasks: largest number of singleton sets over backgrounds
 |
 -----------------------------------------------------------------*/
-static void OrdTiProbs (int k, MrBFlt v, MrBFlt *P)
+static int AscMaxMasks (int k, int mode)
 {
-    int     i, j, n;
-    MrBFlt  q = k / (2.0 * (k - 1.0)), w;
-
-    for (i=0; i<k*k; i++)
-        P[i] = 1.0 / k;
-    for (n=1; n<k; n++)
-        {
-        w = 2.0 / k * exp (-q * (2.0 - 2.0 * cos (M_PI * n / k)) * v);
-        for (i=0; i<k; i++)
-            for (j=0; j<k; j++)
-                P[i*k+j] += w * cos (M_PI * n * (i + 0.5) / k) * cos (M_PI * n * (j + 0.5) / k);
-        }
+    if (mode == ASC_CONSTANT)
+        return 1;
+    if (mode == ASC_SINGLETONS)
+        return 1 << (k-1);
+    return 1 + (k-1) + ((k-1)/2) * (k/2);
 }
 
 
 /*----------------------------------------------------------------
 |
-|   OrdUninfMsg: ordered-character UninfMsg with background
-|       state om->a and singleton sets restricted to om
+|   AscLeaf: f(s,i) at a tip in state s, 1 if the tip shows the
+|       background (empty set i) or is the singleton of set {s}
 |
 -----------------------------------------------------------------*/
-static void OrdUninfMsg (TreeNode *q, int asTip, const MrBFlt *P, const MrBFlt *Ptab, int k, OrdMasks *om, const char *miss, MrBFlt *out)
+static void AscLeaf (int k, const AscMasks *om, int isMissing, MrBFlt *f)
 {
-    int     s, t, i, mask, sub, n = om->n;
-    MrBFlt  f[UNINF_MAXK*ORD_MAXMASKS], gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS], sum;
+    int     s, n = om->n;
 
-    for (i=0; i<k*n; i++)
-        f[i] = 0.0;
-    if ((asTip == YES || (q->left == NULL && q->right == NULL)) && miss[q->index] == YES)
+    for (s=0; s<k*n; s++)
+        f[s] = 0.0;
+    if (isMissing == YES)
         {
         for (s=0; s<k; s++)
             f[s*n] = 1.0;
+        return;
         }
-    else if (asTip == YES || (q->left == NULL && q->right == NULL))
-        {
-        f[om->a*n] = 1.0;
+    f[om->a*n] = 1.0;
+    if (n > 1)
         for (s=0; s<k; s++)
             if (s != om->a)
                 f[s*n + om->idx[1 << s]] = 1.0;
-        }
-    else
-        {
-        OrdUninfMsg (q->left, NO, Ptab + q->left->index*k*k, Ptab, k, om, miss, gl);
-        OrdUninfMsg (q->right, NO, Ptab + q->right->index*k*k, Ptab, k, om, miss, gr);
-        for (s=0; s<k; s++)
-            for (i=0; i<n; i++)
+}
+
+
+/*----------------------------------------------------------------
+|
+|   AscJoin: f(s,i) at an interior node from the branch messages
+|       of its children, which split singleton set i disjointly
+|
+-----------------------------------------------------------------*/
+static void AscJoin (int k, const AscMasks *om, const MrBFlt *gl, const MrBFlt *gr, MrBFlt *f)
+{
+    int     s, i, mask, sub, n = om->n;
+    MrBFlt  sum;
+
+    for (s=0; s<k; s++)
+        for (i=0; i<n; i++)
+            {
+            mask = om->mask[i];
+            sum = 0.0;
+            for (sub=mask; ; sub=(sub-1)&mask)
                 {
-                mask = om->mask[i];
-                sum = 0.0;
-                for (sub=mask; ; sub=(sub-1)&mask)
-                    {
-                    sum += gl[s*n + om->idx[sub]] * gr[s*n + om->idx[mask^sub]];
-                    if (sub == 0)
-                        break;
-                    }
-                f[s*n + i] = sum;
+                sum += gl[s*n + ASC_IDX(om,sub)] * gr[s*n + ASC_IDX(om,mask^sub)];
+                if (sub == 0)
+                    break;
                 }
-        }
+            f[s*n + i] = sum;
+            }
+}
+
+
+/*----------------------------------------------------------------
+|
+|   AscBranch: branch message out(s,i) = sum_t P(s->t) f(t,i)
+|
+-----------------------------------------------------------------*/
+static void AscBranch (int k, int n, const CLFlt *tiP, const MrBFlt *f, MrBFlt *out)
+{
+    int     s, t, i;
+    MrBFlt  sum;
+
     for (s=0; s<k; s++)
         for (i=0; i<n; i++)
             {
             sum = 0.0;
             for (t=0; t<k; t++)
-                sum += P[s*k+t] * f[t*n + i];
+                sum += tiP[s*k+t] * f[t*n + i];
             out[s*n + i] = sum;
             }
 }
@@ -8009,138 +7913,331 @@ static void OrdUninfMsg (TreeNode *q, int asTip, const MrBFlt *P, const MrBFlt *
 
 /*----------------------------------------------------------------
 |
-|   OrderedUninformativeProb: rate-category average probability
-|       of Wagner-uninformative k-state ordered patterns
-|       (no threshold between adjacent states with at least two
-|       taxa on each side) with missing tips
+|   AscWeight: weight of singleton set mask with background a,
+|       so that a pattern with every scored taxon in a different
+|       state is counted once
 |
 -----------------------------------------------------------------*/
-static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, int k, const char *miss, int nObs)
+static MrBFlt AscWeight (int k, int a, int mode, int mask, int nObs)
 {
-    int     a, b, s, i, mask, sub, sub2, rest, r, x, bits, below, above, smallest, nRateCats;
-    MrBFlt  gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS], ga[UNINF_MAXK*ORD_MAXMASKS],
-            h, lr, *catRate, theRate = 1.0, baseRate, total = 0.0;
-    Tree    *t;
-    TreeNode *p;
-    OrdMasks om;
-    MrBFlt  *Ptab, len;
-    TreeNode *q;
-    int     j, maxIndex;
+    int     b, x, bits, below, above, all;
 
-    t = GetTree (m->brlens, chain, state[chain]);
-    p = t->root->left;
-    baseRate = GetRate (division, chain);
-    if (m->shape != NULL)
-        catRate = GetParamSubVals (m->shape, chain, state[chain]);
-    else
-        catRate = &theRate;
-    nRateCats = m->numRateCats;
-    for (j=maxIndex=0; j<t->nNodes; j++)
-        if (t->allDownPass[j]->index > maxIndex)
-            maxIndex = t->allDownPass[j]->index;
-    Ptab = (MrBFlt *) SafeMalloc ((size_t)(maxIndex + 1) * k * k * sizeof(MrBFlt));
-    if (!Ptab)
+    for (bits=0, x=mask; x; x &= x-1)
+        bits++;
+    if (bits >= nObs)
         return 0.0;
-    for (r=0; r<nRateCats; r++)
+    if (bits < nObs - 1 || mode == ASC_CONSTANT)
+        return 1.0;
+    if (mode == ASC_SINGLETONS)
+        return 1.0 / nObs;
+    all = mask | (1 << a);
+    for (b=0; b<k; b++)
         {
-        /* transition probabilities of every branch for this rate category */
-        for (j=0; j<t->nNodes; j++)
-            {
-            q = t->allDownPass[j];
-            len = q->length;
-            if (len > BRLENS_MAX)
-                len = BRLENS_MAX;
-            else if (len < BRLENS_MIN)
-                len = BRLENS_MIN;
-            OrdTiProbs (k, len * baseRate * catRate[r], Ptab + q->index*k*k);
-            }
-        for (a=0; a<k; a++)
-            {
-            SetOrdMasks (k, a, &om);
-            OrdUninfMsg (p->left,  NO,  Ptab + p->left->index*k*k,  Ptab, k, &om, miss, gl);
-            OrdUninfMsg (p->right, NO,  Ptab + p->right->index*k*k, Ptab, k, &om, miss, gr);
-            OrdUninfMsg (p->anc,   YES, Ptab + p->index*k*k,        Ptab, k, &om, miss, ga);
-            for (i=0; i<om.n; i++)
-                {
-                mask = om.mask[i];
-                for (bits=0, x=mask; x; x &= x-1)
-                    bits++;
-                if (bits >= nObs)
-                    continue;
-                if (bits == nObs - 1)
-                    {
-                    /* count all-distinct patterns only for the smallest valid background */
-                    smallest = -1;
-                    for (b=0; b<k && smallest < 0; b++)
-                        {
-                        if (((mask | (1 << a)) & (1 << b)) == 0)
-                            continue;
-                        for (below=above=0, x=0; x<k; x++)
-                            if (x != b && ((mask | (1 << a)) & (1 << x)))
-                                (x < b ? below++ : above++);
-                        if (below <= 1 && above <= 1)
-                            smallest = b;
-                        }
-                    if (smallest != a)
-                        continue;
-                    }
-                for (s=0; s<k; s++)
-                    {
-                    h = 0.0;
-                    for (sub=mask; ; sub=(sub-1)&mask)
-                        {
-                        rest = mask ^ sub;
-                        lr = 0.0;
-                        for (sub2=sub; ; sub2=(sub2-1)&sub)
-                            {
-                            lr += gl[s*om.n + om.idx[sub2]] * gr[s*om.n + om.idx[sub^sub2]];
-                            if (sub2 == 0)
-                                break;
-                            }
-                        h += lr * ga[s*om.n + om.idx[rest]];
-                        if (sub == 0)
-                            break;
-                        }
-                    total += h / k;
-                    }
-                }
-            }
+        if ((all & (1 << b)) == 0)
+            continue;
+        for (below=above=0, x=0; x<k; x++)
+            if (x != b && (all & (1 << x)))
+                (x < b ? below++ : above++);
+        if (below <= 1 && above <= 1)
+            return (b == a ? 1.0 : 0.0);
         }
-    free (Ptab);
-    return total / nRateCats;
+    return 0.0;
 }
 
 
 /*----------------------------------------------------------------
 |
-|   BuildInfClasses: group exact informative characters by
-|       (states, ordered, missing taxa), treating '?', gaps and
-|       cells covering all states as missing
+|   AscChildMsg: branch message of child q, from its tip states
+|       or its cached f
 |
 -----------------------------------------------------------------*/
-static int BuildInfClasses (ModelInfo *m)
+static void AscChildMsg (ModelInfo *m, int chain, TreeNode *q, int c, int k, const AscMasks *om, const char *miss,
+                         int tiOffset, MrBFlt *cache, size_t off, MrBFlt *f, MrBFlt *out)
 {
-    int         c, i, j, k, ord, nObs, col, full;
+    CLFlt   *tiP;
+
+    if (q->left == NULL || q->anc == NULL)
+        AscLeaf (k, om, miss[q->index], f);
+    else
+        f = cache + (size_t)m->condLikeIndex[chain][q->index] * m->ascSlotSize + off;
+    tiP = m->tiProbs[m->tiProbsIndex[chain][q->index]] + m->tiIndex[c] + tiOffset;
+    AscBranch (k, om->n, tiP, f, out);
+}
+
+
+/*----------------------------------------------------------------
+|
+|   AscUnobservedProb: probability that a character of class cl
+|       is constant (coding=variable) or parsimony-uninformative
+|       (coding=informative) among its scored taxa under its own
+|       model; f of interior nodes is kept in the slots of their
+|       conditional likelihoods
+|
+-----------------------------------------------------------------*/
+static MrBFlt AscUnobservedProb (ModelInfo *m, int chain, int cl)
+{
+    int         a, b, i, j, r, s, n, nA, nBeta, nRate, mask, sub, sub2, tiOffset,
+                c = m->ascClassChar[cl], k = m->ascClassK[cl], mode = m->ascClassMode[cl], nObs = m->ascClassObs[cl];
+    char        *miss = m->ascClassMiss + cl*numLocalTaxa;
+    size_t      off;
+    MrBFlt      *bs, *f, *gl, *gr, *ga, *fq, h, lr, wt, total = 0.0;
+    Tree        *t;
+    TreeNode    *p, *q;
+    AscMasks    om;
+
+    t = GetTree (m->brlens, chain, state[chain]);
+    p = t->root->left;
+    f = m->ascWork;
+    gl = f + ASC_SLOT;
+    gr = gl + ASC_SLOT;
+    ga = gr + ASC_SLOT;
+    nRate = m->numRateCats;
+    nBeta = (k == 2 && m->stateFreq->paramId != SYMPI_EQUAL) ? m->numBetaCats : 1;
+    /* backgrounds are interchangeable only under the unordered model with equal frequencies */
+    nA = (m->stateFreq->paramId == SYMPI_EQUAL && (k == 2 || m->cType[c] == UNORD)) ? 1 : k;
+    for (b=0; b<nBeta; b++)
+        {
+        bs = GetParamStdStateFreqs (m->stateFreq, chain, state[chain]) + m->bsIndex[c] + b*k;
+        for (r=0; r<nRate; r++)
+            {
+            tiOffset = (b*nRate + r)*k*k;
+            for (a=0; a<nA; a++)
+                {
+                SetAscMasks (k, a, mode, &om);
+                n = om.n;
+                off = m->ascClassOffset[cl] + (size_t)((b*nRate + r)*nA + a) * k * AscMaxMasks (k, mode);
+                for (j=0; j<t->nIntNodes; j++)
+                    {
+                    q = t->intDownPass[j];
+                    if (q == p || q->upDateCl == NO)
+                        continue;
+                    fq = m->ascCache + (size_t)m->condLikeIndex[chain][q->index] * m->ascSlotSize + off;
+                    AscChildMsg (m, chain, q->left,  c, k, &om, miss, tiOffset, m->ascCache, off, f, gl);
+                    AscChildMsg (m, chain, q->right, c, k, &om, miss, tiOffset, m->ascCache, off, f, gr);
+                    AscJoin (k, &om, gl, gr, fq);
+                    }
+                AscChildMsg (m, chain, p->left,  c, k, &om, miss, tiOffset, m->ascCache, off, f, gl);
+                AscChildMsg (m, chain, p->right, c, k, &om, miss, tiOffset, m->ascCache, off, f, gr);
+                if (t->isRooted == NO)
+                    {
+                    AscLeaf (k, &om, miss[p->anc->index], f);
+                    AscBranch (k, n, m->tiProbs[m->tiProbsIndex[chain][p->index]] + m->tiIndex[c] + tiOffset, f, ga);
+                    }
+                for (i=0; i<n; i++)
+                    {
+                    mask = om.mask[i];
+                    wt = AscWeight (k, a, mode, mask, nObs);
+                    if (wt == 0.0)
+                        continue;
+                    for (s=0; s<k; s++)
+                        {
+                        h = 0.0;
+                        for (sub=mask; ; sub=(sub-1)&mask)
+                            {
+                            if (t->isRooted == YES)
+                                h += gl[s*n + ASC_IDX(&om,sub)] * gr[s*n + ASC_IDX(&om,mask^sub)];
+                            else
+                                {
+                                lr = 0.0;
+                                for (sub2=sub; ; sub2=(sub2-1)&sub)
+                                    {
+                                    lr += gl[s*n + ASC_IDX(&om,sub2)] * gr[s*n + ASC_IDX(&om,sub^sub2)];
+                                    if (sub2 == 0)
+                                        break;
+                                    }
+                                h += lr * ga[s*n + ASC_IDX(&om,mask^sub)];
+                                }
+                            if (sub == 0)
+                                break;
+                            }
+                        total += wt * bs[s] * h;
+                        }
+                    }
+                }
+            }
+        }
+    if (nA == 1)
+        total *= k;
+    return total / (nBeta * nRate);
+}
+
+
+/*----------------------------------------------------------------
+|
+|   AscPatternLike: likelihood of tip state sets tips[] under the
+|       model of character c, averaged over rate and beta
+|       categories
+|
+-----------------------------------------------------------------*/
+static MrBFlt AscPatternLike (ModelInfo *m, int chain, int c, const BitsLong *tips)
+{
+    int         b, j, r, s, x, nBeta, nRate, k = m->nStates[c];
+    MrBFlt      *bs, *work = m->ascWork, *L, *Ll, *Lr, sl, sr, sa, total = 0.0;
+    CLFlt       *tiP;
+    Tree        *t;
+    TreeNode    *p, *q;
+
+    t = GetTree (m->brlens, chain, state[chain]);
+    p = t->root->left;
+    nRate = m->numRateCats;
+    nBeta = (k == 2 && m->stateFreq->paramId != SYMPI_EQUAL) ? m->numBetaCats : 1;
+    for (b=0; b<nBeta; b++)
+        {
+        bs = GetParamStdStateFreqs (m->stateFreq, chain, state[chain]) + m->bsIndex[c] + b*k;
+        for (r=0; r<nRate; r++)
+            {
+            for (j=0; j<t->nNodes; j++)
+                {
+                q = t->allDownPass[j];
+                if (q == p || (q == t->root && t->isRooted == YES))
+                    continue;
+                L = work + q->index*ASC_SLOT;
+                if (q->left == NULL || q == t->root)
+                    {
+                    for (s=0; s<k; s++)
+                        L[s] = ((tips[q->index] >> s) & 1) ? 1.0 : 0.0;
+                    continue;
+                    }
+                Ll = work + q->left->index*ASC_SLOT;
+                Lr = work + q->right->index*ASC_SLOT;
+                for (s=0; s<k; s++)
+                    {
+                    tiP = m->tiProbs[m->tiProbsIndex[chain][q->left->index]] + m->tiIndex[c] + (b*nRate + r)*k*k;
+                    for (sl=0.0, x=0; x<k; x++)
+                        sl += tiP[s*k+x] * Ll[x];
+                    tiP = m->tiProbs[m->tiProbsIndex[chain][q->right->index]] + m->tiIndex[c] + (b*nRate + r)*k*k;
+                    for (sr=0.0, x=0; x<k; x++)
+                        sr += tiP[s*k+x] * Lr[x];
+                    L[s] = sl * sr;
+                    }
+                }
+            Ll = work + p->left->index*ASC_SLOT;
+            Lr = work + p->right->index*ASC_SLOT;
+            for (s=0; s<k; s++)
+                {
+                tiP = m->tiProbs[m->tiProbsIndex[chain][p->left->index]] + m->tiIndex[c] + (b*nRate + r)*k*k;
+                for (sl=0.0, x=0; x<k; x++)
+                    sl += tiP[s*k+x] * Ll[x];
+                tiP = m->tiProbs[m->tiProbsIndex[chain][p->right->index]] + m->tiIndex[c] + (b*nRate + r)*k*k;
+                for (sr=0.0, x=0; x<k; x++)
+                    sr += tiP[s*k+x] * Lr[x];
+                sa = 1.0;
+                if (t->isRooted == NO)
+                    {
+                    L = work + t->root->index*ASC_SLOT;
+                    tiP = m->tiProbs[m->tiProbsIndex[chain][p->index]] + m->tiIndex[c] + (b*nRate + r)*k*k;
+                    for (sa=0.0, x=0; x<k; x++)
+                        sa += tiP[s*k+x] * L[x];
+                    }
+                total += bs[s] * sl * sr * sa;
+                }
+            }
+        }
+    return total / (nBeta * nRate);
+}
+
+
+/*----------------------------------------------------------------
+|
+|   AscEnumeratedProb: AscUnobservedProb by summing the
+|       likelihood of every pattern of the scored taxa
+|
+-----------------------------------------------------------------*/
+static MrBFlt AscEnumeratedProb (ModelInfo *m, int chain, int cl)
+{
+    int         i, j, s, x, nPat, pat, two, lo, hi, cnt[MAX_STD_STATES],
+                c = m->ascClassChar[cl], k = m->ascClassK[cl], mode = m->ascClassMode[cl], nObs = m->ascClassObs[cl];
+    char        *miss = m->ascClassMiss + cl*numLocalTaxa;
+    BitsLong    *tips;
+    MrBFlt      total = 0.0;
+
+    tips = (BitsLong *) SafeMalloc ((size_t)numLocalTaxa * sizeof(BitsLong));
+    if (!tips)
+        return 0.0;
+    for (nPat=1, i=0; i<nObs; i++)
+        nPat *= k;
+    for (pat=0; pat<nPat; pat++)
+        {
+        for (s=0; s<k; s++)
+            cnt[s] = 0;
+        for (x=pat, i=0; i<numLocalTaxa; i++)
+            {
+            tips[i] = ((BitsLong)1 << k) - 1;
+            if (miss[i] == NO)
+                {
+                cnt[x % k]++;
+                tips[i] = (BitsLong)1 << (x % k);
+                x /= k;
+                }
+            }
+        for (two=j=0, s=0; s<k; s++)
+            {
+            if (cnt[s] >= 2)
+                two++;
+            if (cnt[s] > 0)
+                j++;
+            }
+        if (mode == ASC_CONSTANT && j != 1)
+            continue;
+        if (mode == ASC_SINGLETONS && two > 1)
+            continue;
+        if (mode == ASC_WAGNER)
+            {
+            for (j=1; j<k; j++)
+                {
+                for (lo=hi=0, s=0; s<k; s++)
+                    (s < j ? (lo += cnt[s]) : (hi += cnt[s]));
+                if (lo >= 2 && hi >= 2)
+                    break;
+                }
+            if (j < k)
+                continue;
+            }
+        total += AscPatternLike (m, chain, c, tips);
+        }
+    free (tips);
+    return total;
+}
+
+
+/*----------------------------------------------------------------
+|
+|   BuildAscClasses: group characters by model (states, transition
+|       probabilities, frequencies, ordering) and missing taxa,
+|       treating '?', gaps and cells covering all states as missing
+|
+-----------------------------------------------------------------*/
+static int BuildAscClasses (ModelInfo *m)
+{
+    int         c, i, j, k, mode, nObs, col, full;
     char        *miss;
     BitsLong    v;
 
-    m->infClassOf = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->infClassK = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->infClassOrd = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->infClassObs = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->infClassMiss = (char *) SafeMalloc ((size_t)m->numChars * numLocalTaxa * sizeof(char));
-    m->infClassCount = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
+    m->ascClassOf = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascClassChar = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascClassK = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascClassMode = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascClassObs = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascClassMiss = (char *) SafeMalloc ((size_t)m->numChars * numLocalTaxa * sizeof(char));
+    m->ascClassCount = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
+    m->ascClassOffset = (size_t *) SafeMalloc ((size_t)m->numChars * sizeof(size_t));
+    m->ascWork = (MrBFlt *) SafeMalloc ((size_t)(2*numLocalTaxa + 2) * ASC_SLOT * sizeof(MrBFlt));
+    m->ascSiteLike = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
     miss = (char *) SafeMalloc ((size_t)numLocalTaxa * sizeof(char));
-    if (!m->infClassOf || !m->infClassK || !m->infClassOrd || !m->infClassObs || !m->infClassMiss || !m->infClassCount || !miss)
+    if (!m->ascClassOf || !m->ascClassChar || !m->ascClassK || !m->ascClassMode || !m->ascClassObs || !m->ascClassMiss
+        || !m->ascClassCount || !m->ascClassOffset || !m->ascWork || !m->ascSiteLike || !miss)
         return ERROR;
-    m->numInfClasses = 0;
+    m->numAscClasses = 0;
     for (c=0; c<m->numChars; c++)
         {
-        m->infClassOf[c] = -1;
+        m->ascClassOf[c] = -1;
         if (c < m->numDummyChars)
             continue;
         k = m->nStates[c];
-        ord = (m->cType[c] == ORD && k > 2) ? YES : NO;
+        if (m->exactAsc == VARIABLE)
+            mode = ASC_CONSTANT;
+        else
+            mode = (m->cType[c] == ORD && k > 2) ? ASC_WAGNER : ASC_SINGLETONS;
         col = m->compMatrixStart + c;
         full = (1 << k) - 1;
         for (i=nObs=0; i<numLocalTaxa; i++)
@@ -8150,22 +8247,97 @@ static int BuildInfClasses (ModelInfo *m)
             if (miss[i] == NO)
                 nObs++;
             }
-        for (j=0; j<m->numInfClasses; j++)
-            if (m->infClassK[j] == k && m->infClassOrd[j] == ord && memcmp (m->infClassMiss + j*numLocalTaxa, miss, numLocalTaxa) == 0)
+        for (j=0; j<m->numAscClasses; j++)
+            if (m->ascClassK[j] == k && m->ascClassMode[j] == mode && m->tiIndex[m->ascClassChar[j]] == m->tiIndex[c]
+                && m->bsIndex[m->ascClassChar[j]] == m->bsIndex[c] && m->cType[m->ascClassChar[j]] == m->cType[c]
+                && memcmp (m->ascClassMiss + j*numLocalTaxa, miss, numLocalTaxa) == 0)
                 break;
-        if (j == m->numInfClasses)
+        if (j == m->numAscClasses)
             {
-            m->infClassK[j] = k;
-            m->infClassOrd[j] = ord;
-            m->infClassObs[j] = nObs;
-            memcpy (m->infClassMiss + j*numLocalTaxa, miss, numLocalTaxa);
-            m->numInfClasses++;
+            m->ascClassChar[j] = c;
+            m->ascClassK[j] = k;
+            m->ascClassMode[j] = mode;
+            m->ascClassObs[j] = nObs;
+            memcpy (m->ascClassMiss + j*numLocalTaxa, miss, numLocalTaxa);
+            m->numAscClasses++;
             }
-        m->infClassOf[c] = j;
+        m->ascClassOf[c] = j;
         }
     free (miss);
+    m->ascSlotSize = 0;
+    for (j=0; j<m->numAscClasses; j++)
+        {
+        int nA, nBeta, n;
+        c = m->ascClassChar[j];
+        k = m->ascClassK[j];
+        nA = (m->stateFreq->paramId == SYMPI_EQUAL && (k == 2 || m->cType[c] == UNORD)) ? 1 : k;
+        nBeta = (k == 2 && m->stateFreq->paramId != SYMPI_EQUAL) ? m->numBetaCats : 1;
+        n = AscMaxMasks (k, m->ascClassMode[j]);
+        m->ascClassOffset[j] = m->ascSlotSize;
+        m->ascSlotSize += (size_t)nBeta * m->numRateCats * nA * k * n;
+        }
+    m->ascCache = (MrBFlt *) SafeMalloc ((size_t)m->numCondLikes * m->ascSlotSize * sizeof(MrBFlt));
+    if (!m->ascCache)
+        {
+        MrBayesPrint ("%s   Exact correction needs %.0f MB of cache\n", spacer, (double)m->numCondLikes * m->ascSlotSize * sizeof(MrBFlt) / 1048576.0);
+        return ERROR;
+        }
     return NO_ERROR;
 }
+
+
+/*----------------------------------------------------------------
+|
+|   AscCorrection: sum over classes of count * log(1 - P(class
+|       unobserved)); MB_EXACT_CHECK=1 compares every class with
+|       enumeration and prints mismatches
+|
+-----------------------------------------------------------------*/
+static MrBFlt AscCorrection (ModelInfo *m, int chain)
+{
+    int         cl;
+    MrBFlt      pObserved, pU, corr = 0.0;
+    static int  check = -1, checked = 0;
+
+    if (check == -1)
+        {
+        char *e = getenv ("MB_EXACT_CHECK");
+        check = (e != NULL && strcmp (e, "1") == 0) ? YES : NO;
+        }
+    for (cl=0; cl<m->numAscClasses; cl++)
+        {
+        if (m->ascClassCount[cl] == 0.0)
+            continue;
+        pU = AscUnobservedProb (m, chain, cl);
+        if (check == YES)
+            {
+            int i, c = m->ascClassChar[cl];
+            MrBFlt pE, like, rel1, rel2;
+            BitsLong tips[2*MAX_STD_STATES*MAX_STD_STATES];
+            for (i=0; i<numLocalTaxa && i<2*MAX_STD_STATES*MAX_STD_STATES; i++)
+                {
+                tips[i] = compMatrix[pos(i, m->compMatrixStart + c, compMatrixRowSize)] & (((BitsLong)1 << m->nStates[c]) - 1);
+                if (tips[i] == 0)
+                    tips[i] = ((BitsLong)1 << m->nStates[c]) - 1;
+                }
+            pE = AscEnumeratedProb (m, chain, cl);
+            like = AscPatternLike (m, chain, c, tips);
+            rel1 = fabs (pU - pE) / pE;
+            rel2 = fabs (like - m->ascSiteLike[c]) / m->ascSiteLike[c];
+            checked++;
+            if (rel1 > 1e-10 || rel2 > 1e-4 || checked % 5000 == 1)
+                MrBayesPrint ("%s   MB_EXACT_CHECK%s %d: class %d (%d states, mode %d, %d scored) recursion %.15e enumeration %.15e"
+                    " char %d like %.15e site like %.15e\n", spacer, (rel1 > 1e-10 || rel2 > 1e-4) ? " MISMATCH" : "", checked,
+                    cl, m->ascClassK[cl], m->ascClassMode[cl], m->ascClassObs[cl], pU, pE, c, like, m->ascSiteLike[c]);
+            }
+        pObserved = 1.0 - pU;
+        if (pObserved < LIKE_EPSILON)
+            pObserved = LIKE_EPSILON;
+        corr += log(pObserved) * m->ascClassCount[cl];
+        }
+    return corr;
+}
+
 
 /*------------------------------------------------------------------
 |
@@ -8177,8 +8349,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 {
     int             b, c, j, k, nBetaCats, nRateCats, nStates, numReps;
     MrBFlt          catLike, catFreq, rateFreq, like, *bs, *bsBase,
-                    pUnobserved, pObserved, clsUnobs[2*MAX_STD_STATES], clsCount[2*MAX_STD_STATES];
-    int             cl;
+                    pUnobserved, pObserved;
     CLFlt           *clPtr, **clP, *lnScaler, *nSitesOfPat;
     ModelInfo       *m;
 
@@ -8216,14 +8387,12 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     
     *lnL = 0.0; /* reset lnL */
 
-    for (cl=0; cl<m->numDummyClasses; cl++)
-        clsUnobs[cl] = clsCount[cl] = 0.0;
-    if (m->exactInformative == YES)
+    if (m->exactAsc != NO)
         {
-        if (m->infClassOf == NULL && BuildInfClasses (m) == ERROR)
+        if (m->ascClassOf == NULL && BuildAscClasses (m) == ERROR)
             return ERROR;
-        for (cl=0; cl<m->numInfClasses; cl++)
-            m->infClassCount[cl] = 0.0;
+        for (c=0; c<m->numAscClasses; c++)
+            m->ascClassCount[c] = 0.0;
         }
 
     if (m->numBetaCats == 1)
@@ -8244,8 +8413,6 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 clP[k] += nStates;
                 }
             pUnobserved += like *  exp(lnScaler[c]);
-            if (m->numDummyClasses > 0)
-                clsUnobs[m->dummyClass[c]] += like * exp(lnScaler[c]);
             }
 
         pObserved =  1.0 - pUnobserved;
@@ -8254,6 +8421,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 
         for (c=m->numDummyChars; c<m->numChars; c++)
             {
+            if (m->exactAsc != NO)
+                m->ascClassCount[m->ascClassOf[c]] += nSitesOfPat[c];
             like = 0.0;
             nStates = m->nStates[c];
             bs = bsBase + m->bsIndex[c];
@@ -8280,20 +8449,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 {
                 (*lnL) += (lnScaler[c] +  log(like)) * nSitesOfPat[c];
                 }
-            for (cl=0; cl<m->numDummyClasses; cl++)
-                if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
-                    break;
-            if (m->exactInformative == YES)
-                m->infClassCount[m->infClassOf[c]] += nSitesOfPat[c];
-            if (m->numDummyClasses > 0)
-                {
-                if (cl == m->numDummyClasses)
-                    {
-                    MrBayesPrint ("%s   MB_EXACT_MKV: Character %d has no dummy class\n", spacer, c);
-                    return ERROR;
-                    }
-                clsCount[cl] += nSitesOfPat[c];
-                }
+            if (m->exactAsc != NO)
+                m->ascSiteLike[c] = like * exp(lnScaler[c]);
             }
         }
     else
@@ -8327,8 +8484,6 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 bs += nStates;
                 }
             pUnobserved += like *  exp(lnScaler[c]);
-            if (m->numDummyClasses > 0)
-                clsUnobs[m->dummyClass[c]] += like * exp(lnScaler[c]);
             }
 
         pObserved =  1.0 - pUnobserved;
@@ -8337,6 +8492,8 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 
         for (c=m->numDummyChars; c<m->numChars; c++)
             {
+            if (m->exactAsc != NO)
+                m->ascClassCount[m->ascClassOf[c]] += nSitesOfPat[c];
             like = 0.0;
             nStates = m->nStates[c];
             bs = bsBase + m->bsIndex[c];
@@ -8376,58 +8533,14 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 {
                 (*lnL) += (lnScaler[c] +  log(like)) * nSitesOfPat[c];
                 }
-            for (cl=0; cl<m->numDummyClasses; cl++)
-                if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
-                    break;
-            if (m->exactInformative == YES)
-                m->infClassCount[m->infClassOf[c]] += nSitesOfPat[c];
-            if (m->numDummyClasses > 0)
-                {
-                if (cl == m->numDummyClasses)
-                    {
-                    MrBayesPrint ("%s   MB_EXACT_MKV: Character %d has no dummy class\n", spacer, c);
-                    return ERROR;
-                    }
-                clsCount[cl] += nSitesOfPat[c];
-                }
+            if (m->exactAsc != NO)
+                m->ascSiteLike[c] = like * exp(lnScaler[c]);
             }
         }
 
     /* correct for absent characters */
-    if (m->numDummyClasses > 0)
-        {
-        for (cl=0; cl<m->numDummyClasses; cl++)
-            {
-            if (clsCount[cl] == 0.0)
-                continue;
-            pObserved = 1.0 - clsUnobs[cl];
-            if (pObserved < LIKE_EPSILON)
-                pObserved = LIKE_EPSILON;
-            (*lnL) -= log(pObserved) * clsCount[cl];
-            }
-        }
-    else if (m->exactInformative == YES)
-        {
-        /* subtract log(1 - P(uninformative)) for each class */
-        if (GetTree (m->brlens, chain, state[chain])->isRooted == YES)
-            {
-            MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unrooted trees\n", spacer);
-            return ERROR;
-            }
-        for (cl=0; cl<m->numInfClasses; cl++)
-            {
-            char *miss = m->infClassMiss + cl*numLocalTaxa;
-            if (m->infClassCount[cl] == 0.0)
-                continue;
-            if (m->infClassOrd[cl] == YES)
-                pObserved = 1.0 - OrderedUninformativeProb (m, chain, division, m->infClassK[cl], miss, m->infClassObs[cl]);
-            else
-                pObserved = 1.0 - UninformativeProb (m, chain, division, m->infClassK[cl], miss, m->infClassObs[cl]);
-            if (pObserved < LIKE_EPSILON)
-                pObserved = LIKE_EPSILON;
-            (*lnL) -= log(pObserved) * m->infClassCount[cl];
-            }
-        }
+    if (m->exactAsc != NO)
+        (*lnL) -= AscCorrection (m, chain);
     else
         (*lnL) -=  log(pObserved) * (m->numUncompressedChars);
 
