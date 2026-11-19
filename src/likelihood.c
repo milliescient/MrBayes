@@ -7885,6 +7885,203 @@ static MrBFlt UninformativeProb (ModelInfo *m, int chain, int division, int k)
     return total / nRateCats;
 }
 
+
+#define ORD_MAXMASKS    32
+/*----------------------------------------------------------------
+|
+|   SetOrdMasks: Wagner-uninformative singleton sets with at
+|       most one state below background a and one above,
+|       with idx mapping each set to its slot or -1
+|
+-----------------------------------------------------------------*/
+typedef struct
+    {
+    int     a, n, mask[ORD_MAXMASKS], idx[1 << UNINF_MAXK];
+    } OrdMasks;
+
+static void SetOrdMasks (int k, int a, OrdMasks *om)
+{
+    int     x, lo, hi;
+
+    om->a = a;
+    for (x=0; x<(1 << k); x++)
+        om->idx[x] = -1;
+    om->n = 0;
+    om->idx[0] = om->n;
+    om->mask[om->n++] = 0;
+    for (x=0; x<k; x++)
+        if (x != a)
+            {
+            om->idx[1 << x] = om->n;
+            om->mask[om->n++] = 1 << x;
+            }
+    for (lo=0; lo<a; lo++)
+        for (hi=a+1; hi<k; hi++)
+            {
+            om->idx[(1 << lo) | (1 << hi)] = om->n;
+            om->mask[om->n++] = (1 << lo) | (1 << hi);
+            }
+}
+
+
+/*----------------------------------------------------------------
+|
+|   OrdTiProbs: ordered k-state Mk transition probabilities
+|       with equal frequencies and mean rate 1
+|
+-----------------------------------------------------------------*/
+static void OrdTiProbs (int k, MrBFlt v, MrBFlt *P)
+{
+    int     i, j, n;
+    MrBFlt  q = k / (2.0 * (k - 1.0)), w;
+
+    for (i=0; i<k*k; i++)
+        P[i] = 1.0 / k;
+    for (n=1; n<k; n++)
+        {
+        w = 2.0 / k * exp (-q * (2.0 - 2.0 * cos (M_PI * n / k)) * v);
+        for (i=0; i<k; i++)
+            for (j=0; j<k; j++)
+                P[i*k+j] += w * cos (M_PI * n * (i + 0.5) / k) * cos (M_PI * n * (j + 0.5) / k);
+        }
+}
+
+
+/*----------------------------------------------------------------
+|
+|   OrdUninfMsg: ordered-character UninfMsg with background
+|       state om->a and singleton sets restricted to om
+|
+-----------------------------------------------------------------*/
+static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, OrdMasks *om, MrBFlt *out)
+{
+    int     s, t, i, mask, sub, n = om->n;
+    MrBFlt  f[UNINF_MAXK*ORD_MAXMASKS], gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS],
+            P[UNINF_MAXK*UNINF_MAXK], sum;
+
+    for (i=0; i<k*n; i++)
+        f[i] = 0.0;
+    if (asTip == YES || (q->left == NULL && q->right == NULL))
+        {
+        f[om->a*n] = 1.0;
+        for (s=0; s<k; s++)
+            if (s != om->a)
+                f[s*n + om->idx[1 << s]] = 1.0;
+        }
+    else
+        {
+        OrdUninfMsg (q->left, NO, q->left->length, rate, k, om, gl);
+        OrdUninfMsg (q->right, NO, q->right->length, rate, k, om, gr);
+        for (s=0; s<k; s++)
+            for (i=0; i<n; i++)
+                {
+                mask = om->mask[i];
+                sum = 0.0;
+                for (sub=mask; ; sub=(sub-1)&mask)
+                    {
+                    sum += gl[s*n + om->idx[sub]] * gr[s*n + om->idx[mask^sub]];
+                    if (sub == 0)
+                        break;
+                    }
+                f[s*n + i] = sum;
+                }
+        }
+    if (len > BRLENS_MAX)
+        len = BRLENS_MAX;
+    else if (len < BRLENS_MIN)
+        len = BRLENS_MIN;
+    OrdTiProbs (k, len * rate, P);
+    for (s=0; s<k; s++)
+        for (i=0; i<n; i++)
+            {
+            sum = 0.0;
+            for (t=0; t<k; t++)
+                sum += P[s*k+t] * f[t*n + i];
+            out[s*n + i] = sum;
+            }
+}
+
+
+/*----------------------------------------------------------------
+|
+|   OrderedUninformativeProb: rate-category average probability
+|       of Wagner-uninformative k-state ordered patterns
+|       (no threshold between adjacent states with at least two
+|       taxa on each side) with all tips scored
+|
+-----------------------------------------------------------------*/
+static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, int k)
+{
+    int     a, b, s, i, mask, sub, sub2, rest, r, x, bits, below, above, smallest, nRateCats;
+    MrBFlt  gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS], ga[UNINF_MAXK*ORD_MAXMASKS],
+            h, lr, *catRate, theRate = 1.0, baseRate, total = 0.0;
+    Tree    *t;
+    TreeNode *p;
+    OrdMasks om;
+
+    t = GetTree (m->brlens, chain, state[chain]);
+    p = t->root->left;
+    baseRate = GetRate (division, chain);
+    if (m->shape != NULL)
+        catRate = GetParamSubVals (m->shape, chain, state[chain]);
+    else
+        catRate = &theRate;
+    nRateCats = m->numRateCats;
+    for (r=0; r<nRateCats; r++)
+        for (a=0; a<k; a++)
+            {
+            SetOrdMasks (k, a, &om);
+            OrdUninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, &om, gl);
+            OrdUninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, &om, gr);
+            OrdUninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, &om, ga);
+            for (i=0; i<om.n; i++)
+                {
+                mask = om.mask[i];
+                for (bits=0, x=mask; x; x &= x-1)
+                    bits++;
+                if (bits >= numLocalTaxa)
+                    continue;
+                if (bits == numLocalTaxa - 1)
+                    {
+                    /* count all-distinct patterns only for the smallest valid background */
+                    smallest = -1;
+                    for (b=0; b<k && smallest < 0; b++)
+                        {
+                        if (((mask | (1 << a)) & (1 << b)) == 0)
+                            continue;
+                        for (below=above=0, x=0; x<k; x++)
+                            if (x != b && ((mask | (1 << a)) & (1 << x)))
+                                (x < b ? below++ : above++);
+                        if (below <= 1 && above <= 1)
+                            smallest = b;
+                        }
+                    if (smallest != a)
+                        continue;
+                    }
+                for (s=0; s<k; s++)
+                    {
+                    h = 0.0;
+                    for (sub=mask; ; sub=(sub-1)&mask)
+                        {
+                        rest = mask ^ sub;
+                        lr = 0.0;
+                        for (sub2=sub; ; sub2=(sub2-1)&sub)
+                            {
+                            lr += gl[s*om.n + om.idx[sub2]] * gr[s*om.n + om.idx[sub^sub2]];
+                            if (sub2 == 0)
+                                break;
+                            }
+                        h += lr * ga[s*om.n + om.idx[rest]];
+                        if (sub == 0)
+                            break;
+                        }
+                    total += h / k;
+                    }
+                }
+            }
+    return total / nRateCats;
+}
+
 /*------------------------------------------------------------------
 |
 |   Likelihood_Std: variable states model with or without rate
@@ -7897,7 +8094,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     MrBFlt          catLike, catFreq, rateFreq, like, *bs, *bsBase,
                     pUnobserved, pObserved, clsUnobs[2*MAX_STD_STATES], clsCount[2*MAX_STD_STATES];
     int             cl, ns;
-    MrBFlt          infCount[MAX_STD_STATES+1];
+    MrBFlt          infCount[MAX_STD_STATES+1], infCountOrd[MAX_STD_STATES+1];
     CLFlt           *clPtr, **clP, *lnScaler, *nSitesOfPat;
     ModelInfo       *m;
 
@@ -7938,7 +8135,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
     for (cl=0; cl<m->numDummyClasses; cl++)
         clsUnobs[cl] = clsCount[cl] = 0.0;
     for (ns=0; ns<=MAX_STD_STATES; ns++)
-        infCount[ns] = 0.0;
+        infCount[ns] = infCountOrd[ns] = 0.0;
 
     if (m->numBetaCats == 1)
         {
@@ -7998,7 +8195,12 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
             if (m->exactInformative == YES)
-                infCount[m->nStates[c]] += nSitesOfPat[c];
+                {
+                if (m->cType[c] == ORD && m->nStates[c] > 2)
+                    infCountOrd[m->nStates[c]] += nSitesOfPat[c];
+                else
+                    infCount[m->nStates[c]] += nSitesOfPat[c];
+                }
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -8094,7 +8296,12 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
                 if (m->dummyClassStates[cl] == m->nStates[c] && m->dummyClassType[cl] == m->cType[c])
                     break;
             if (m->exactInformative == YES)
-                infCount[m->nStates[c]] += nSitesOfPat[c];
+                {
+                if (m->cType[c] == ORD && m->nStates[c] > 2)
+                    infCountOrd[m->nStates[c]] += nSitesOfPat[c];
+                else
+                    infCount[m->nStates[c]] += nSitesOfPat[c];
+                }
             if (m->numDummyClasses > 0)
                 {
                 if (cl == m->numDummyClasses)
@@ -8136,6 +8343,15 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
             if (pObserved < LIKE_EPSILON)
                 pObserved = LIKE_EPSILON;
             (*lnL) -= log(pObserved) * infCount[ns];
+            }
+        for (ns=3; ns<=MAX_STD_STATES; ns++)
+            {
+            if (infCountOrd[ns] == 0.0)
+                continue;
+            pObserved = 1.0 - OrderedUninformativeProb (m, chain, division, ns);
+            if (pObserved < LIKE_EPSILON)
+                pObserved = LIKE_EPSILON;
+            (*lnL) -= log(pObserved) * infCountOrd[ns];
             }
         }
     else

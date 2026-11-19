@@ -241,9 +241,9 @@ int AddDummyChars (void)
                 }
             for (oldColumn=m->compMatrixStart; oldColumn<m->compMatrixStop; oldColumn++)
                 {
-                if (charInfo[origChar[oldColumn]].numStates > 2 && charInfo[origChar[oldColumn]].ctype != UNORD)
+                if (charInfo[origChar[oldColumn]].numStates > 2 && charInfo[origChar[oldColumn]].ctype != UNORD && charInfo[origChar[oldColumn]].ctype != ORD)
                     {
-                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unordered multistate characters\n", spacer);
+                    MrBayesPrint ("%s   MB_EXACT_INFORMATIVE supports only unordered and ordered multistate characters\n", spacer);
                     return (ERROR);
                     }
                 if (charInfo[origChar[oldColumn]].numStates > 8)
