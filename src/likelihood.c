@@ -7959,11 +7959,10 @@ static void OrdTiProbs (int k, MrBFlt v, MrBFlt *P)
 |       state om->a and singleton sets restricted to om
 |
 -----------------------------------------------------------------*/
-static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k, OrdMasks *om, const char *miss, MrBFlt *out)
+static void OrdUninfMsg (TreeNode *q, int asTip, const MrBFlt *P, const MrBFlt *Ptab, int k, OrdMasks *om, const char *miss, MrBFlt *out)
 {
     int     s, t, i, mask, sub, n = om->n;
-    MrBFlt  f[UNINF_MAXK*ORD_MAXMASKS], gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS],
-            P[UNINF_MAXK*UNINF_MAXK], sum;
+    MrBFlt  f[UNINF_MAXK*ORD_MAXMASKS], gl[UNINF_MAXK*ORD_MAXMASKS], gr[UNINF_MAXK*ORD_MAXMASKS], sum;
 
     for (i=0; i<k*n; i++)
         f[i] = 0.0;
@@ -7981,8 +7980,8 @@ static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k,
         }
     else
         {
-        OrdUninfMsg (q->left, NO, q->left->length, rate, k, om, miss, gl);
-        OrdUninfMsg (q->right, NO, q->right->length, rate, k, om, miss, gr);
+        OrdUninfMsg (q->left, NO, Ptab + q->left->index*k*k, Ptab, k, om, miss, gl);
+        OrdUninfMsg (q->right, NO, Ptab + q->right->index*k*k, Ptab, k, om, miss, gr);
         for (s=0; s<k; s++)
             for (i=0; i<n; i++)
                 {
@@ -7997,11 +7996,6 @@ static void OrdUninfMsg (TreeNode *q, int asTip, MrBFlt len, MrBFlt rate, int k,
                 f[s*n + i] = sum;
                 }
         }
-    if (len > BRLENS_MAX)
-        len = BRLENS_MAX;
-    else if (len < BRLENS_MIN)
-        len = BRLENS_MIN;
-    OrdTiProbs (k, len * rate, P);
     for (s=0; s<k; s++)
         for (i=0; i<n; i++)
             {
@@ -8029,6 +8023,9 @@ static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, i
     Tree    *t;
     TreeNode *p;
     OrdMasks om;
+    MrBFlt  *Ptab, len;
+    TreeNode *q;
+    int     j, maxIndex;
 
     t = GetTree (m->brlens, chain, state[chain]);
     p = t->root->left;
@@ -8038,13 +8035,31 @@ static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, i
     else
         catRate = &theRate;
     nRateCats = m->numRateCats;
+    for (j=maxIndex=0; j<t->nNodes; j++)
+        if (t->allDownPass[j]->index > maxIndex)
+            maxIndex = t->allDownPass[j]->index;
+    Ptab = (MrBFlt *) SafeMalloc ((size_t)(maxIndex + 1) * k * k * sizeof(MrBFlt));
+    if (!Ptab)
+        return 0.0;
     for (r=0; r<nRateCats; r++)
+        {
+        /* transition probabilities of every branch for this rate category */
+        for (j=0; j<t->nNodes; j++)
+            {
+            q = t->allDownPass[j];
+            len = q->length;
+            if (len > BRLENS_MAX)
+                len = BRLENS_MAX;
+            else if (len < BRLENS_MIN)
+                len = BRLENS_MIN;
+            OrdTiProbs (k, len * baseRate * catRate[r], Ptab + q->index*k*k);
+            }
         for (a=0; a<k; a++)
             {
             SetOrdMasks (k, a, &om);
-            OrdUninfMsg (p->left,  NO,  p->left->length,  baseRate * catRate[r], k, &om, miss, gl);
-            OrdUninfMsg (p->right, NO,  p->right->length, baseRate * catRate[r], k, &om, miss, gr);
-            OrdUninfMsg (p->anc,   YES, p->length,        baseRate * catRate[r], k, &om, miss, ga);
+            OrdUninfMsg (p->left,  NO,  Ptab + p->left->index*k*k,  Ptab, k, &om, miss, gl);
+            OrdUninfMsg (p->right, NO,  Ptab + p->right->index*k*k, Ptab, k, &om, miss, gr);
+            OrdUninfMsg (p->anc,   YES, Ptab + p->index*k*k,        Ptab, k, &om, miss, ga);
             for (i=0; i<om.n; i++)
                 {
                 mask = om.mask[i];
@@ -8090,6 +8105,8 @@ static MrBFlt OrderedUninformativeProb (ModelInfo *m, int chain, int division, i
                     }
                 }
             }
+        }
+    free (Ptab);
     return total / nRateCats;
 }
 
