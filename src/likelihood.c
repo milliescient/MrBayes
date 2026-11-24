@@ -8408,6 +8408,10 @@ static MrBFlt AscCorrection (ModelInfo *m, int chain, CLFlt *nSitesOfPat)
             }
         if (pRestricted <= 0.0 || like <= 0.0 || pRestricted >= like)
             continue;
+        if (getenv ("MB_EXACT_SHIFT"))
+            MrBayesPrint ("%s   MB_EXACT_SHIFT char %d count %.0f ratio %.12f per %.6f total %.6f\n", spacer, c,
+                (double)nSitesOfPat[c], pRestricted / like, log1p (-pRestricted / like),
+                log1p (-pRestricted / like) * nSitesOfPat[c]);
         corr -= log1p (-pRestricted / like) * nSitesOfPat[c];
         }
     return corr;
