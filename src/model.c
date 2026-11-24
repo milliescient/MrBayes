@@ -1820,14 +1820,10 @@ int ChangeNumRuns (int from, int to)
 -----------------------------------------------------------*/
 void CheckCharCodingType (Matrix *m, CharInfo *ci)
 {
-    int         i, j, k, x, n1[MAX_STD_STATES], n2[MAX_STD_STATES], largest, smallest,
-                numPartAmbig, numConsidered, numInformative, lastInformative=0, uniqueBits,
-                newPoss, oldPoss;
-    BitsLong    combinations[2048], *tempComb, *newComb, *oldComb, bitsLongOne=1;
-
-    /* set up comb pointers */
-    oldComb = combinations;
-    newComb = oldComb + 1024;
+    int         i, j, k, x, n1[MAX_STD_STATES], n2[MAX_STD_STATES],
+                numPartAmbig, numConsidered, allSame, firstSingle, full, lowMask,
+                below, above, nA, nB, nEither, inA, inB;
+    BitsLong    bitsLongOne=1;
 
     /* set counters to 0 */
     numPartAmbig = numConsidered = 0;
@@ -1864,118 +1860,115 @@ void CheckCharCodingType (Matrix *m, CharInfo *ci)
                 }
             }
         }
+    /* a character whose cells all admit every state carries nothing, which includes the case of a
+       single observed state, where nStates is one and every cell reads as fully ambiguous */
+    if (numConsidered == 0)
+        {
+        for (i=0; i<MAX_STD_STATES; i++)
+            ci->constant[i] = YES;
+        ci->variable = ci->informative = NO;
+        return;
+        }
 
-    /* if the ambig counter for any state is equal to the number of considered
-       states, then set constant for that state and set variable and informative to no */
+    /* A character is constant at a state only when every scored cell is that single state. A cell
+       that merely admits the state leaves a resolution in which the character varies, so counting
+       cells that admit it would exclude characters that could have been recorded. */
     for (i=0; i<MAX_STD_STATES; i++)
         {
-        if (n1[i] == numConsidered)
+        if (n2[i] == numConsidered)
             {
             ci->constant[i] = YES;
-            ci->variable = ci->informative = NO;
             }
-            else if (n1[i] == 1)
+        else if (n1[i] == 1)
             {
             ci->singleton[i] = YES;
             }
         }
 
-    /* return if variable is no */
-    if (ci->variable == NO)
-        return;
-
-    /* the character is either (variable and uninformative) or informative */
-    
-    /* first consider unambiguous characters */
-    /* find smallest and largest unambiguous state for this character */
-    smallest = MAX_STD_STATES-1;
-    largest = 0;
-    for (i=0; i<MAX_STD_STATES; i++)
-        {
-        if (n2[i] > 0)
-            {
-            if (i < smallest)
-                smallest = i;
-            if (i > largest)
-                largest = i;
-            }
-        }
-        
-    /* count the number of informative states in the unambiguous codings */
-    for (i=numInformative=0; i<MAX_STD_STATES; i++)
-        {
-        if (ci->cType == ORD && n2[i] > 0 && i != smallest && i != largest)
-            {
-            numInformative++;
-            lastInformative = i;
-            }
-        else if (n2[i] > 1)
-            {
-            numInformative++;
-            lastInformative = i;
-            }
-        }
-
-    /* set informative */
-    if (numInformative > 1)
-        ci->informative = YES;
-    else
-        ci->informative = NO;
-
-    
-    /* we can return now unless informative is no and numPartAmbig is not 0 */
-    if (!(numPartAmbig > 0 && ci->informative == NO))
-        return;
-
-    /* check if partially ambiguous observations make this character informative
-       after all */
-    
-    /* first set the bits for the taken states */
-    x = 0;
-    for (i=0; i<MAX_STD_STATES; i++)
-        {
-        if (n2[i] > 0 && i != lastInformative)
-            x |= (bitsLongOne<<i);
-        }
-    oldPoss = 1;
-    oldComb[0] = x;
-
-    /* now go through all partambig chars and see if we can add them without
-       making the character informative */
+    /* A character could have been recorded if any resolution of its ambiguous cells satisfies the
+       coding, so the tests below ask whether such a resolution exists. A character is forced to be
+       constant only when every scored cell is the same single state. */
+    allSame = YES;
+    firstSingle = -1;
     for (i=0; i<m->nRows; i++)
         {
         x = (int) m->origin[m->column + i*m->rowSize];
-        /* if partambig */ 
-        if (NBits(x) > 1 && NBits(x) < ci->nStates)
+        if (NBits(x) >= ci->nStates)
+            continue;
+        if (NBits(x) != 1)
             {
-            /* remove lastInformative */
-            x &= !(bitsLongOne<<lastInformative);
-            /* reset newPoss */
-            newPoss = 0;
-            /* see if we can add it, store all possible combinations */
-            for (j=0; j<oldPoss; j++)
+            allSame = NO;
+            break;
+            }
+        if (firstSingle < 0)
+            firstSingle = x;
+        else if (x != firstSingle)
+            {
+            allSame = NO;
+            break;
+            }
+        }
+    ci->variable = (allSame == YES) ? NO : YES;
+
+    if (ci->variable == NO)
+        {
+        ci->informative = NO;
+        return;
+        }
+
+    /* Two cells must take one state and two others a second state. Writing A and B for the cells
+       admitting each, such an assignment exists exactly when |A| >= 2, |B| >= 2 and |A or B| >= 4.
+       Under the ordered model the two states are replaced by the two sides of a threshold. */
+    ci->informative = NO;
+    full = (int)((bitsLongOne << ci->nStates) - 1);
+
+    if (numConsidered >= 4)
+        {
+        if (ci->cType == ORD)
+            {
+            for (j=1; j<ci->nStates && ci->informative == NO; j++)
                 {
-                uniqueBits = x & (!oldComb[j]);
-                for (k=0; k<MAX_STD_STATES; k++)
+                lowMask = (int)((bitsLongOne << j) - 1);
+                below = above = 0;
+                for (i=0; i<m->nRows; i++)
                     {
-                    if (((bitsLongOne<<k) & uniqueBits) != 0)
-                        newComb[newPoss++] = oldComb[j] | (bitsLongOne<<k);
+                    x = (int) m->origin[m->column + i*m->rowSize];
+                    if (NBits(x) >= ci->nStates)
+                        continue;
+                    if ((x & lowMask) != 0)
+                        below++;
+                    if ((x & full & ~lowMask) != 0)
+                        above++;
+                    }
+                if (below >= 2 && above >= 2)
+                    ci->informative = YES;
+                }
+            }
+        else
+            {
+            for (j=0; j<ci->nStates && ci->informative == NO; j++)
+                {
+                for (k=j+1; k<ci->nStates && ci->informative == NO; k++)
+                    {
+                    nA = nB = nEither = 0;
+                    for (i=0; i<m->nRows; i++)
+                        {
+                        x = (int) m->origin[m->column + i*m->rowSize];
+                        if (NBits(x) >= ci->nStates)
+                            continue;
+                        inA = ((bitsLongOne << j) & x) != 0 ? 1 : 0;
+                        inB = ((bitsLongOne << k) & x) != 0 ? 1 : 0;
+                        nA += inA;
+                        nB += inB;
+                        nEither += (inA || inB) ? 1 : 0;
+                        }
+                    if (nA >= 2 && nB >= 2 && nEither >= 4)
+                        ci->informative = YES;
                     }
                 }
-            /* break out if we could not add it */
-            if (newPoss == 0)
-                break;
-            
-            /* prepare for next partAmbig */
-            oldPoss = newPoss;
-            tempComb = oldComb;
-            oldComb = newComb;
-            newComb = tempComb;
             }
         }
 
-    if (i < m->nRows)
-        ci->informative = YES;
 
     return;
 }
