@@ -1306,6 +1306,9 @@ typedef struct modelinfo
     int         *ascClassChar;              /* representative character of each class   */
     int         *ascClassK, *ascClassMode, *ascClassObs;
     char        *ascClassMiss;              /* missing taxa of each class               */
+    char        *ascClassRestrict;          /* class is held to the observed states     */
+    int         *ascRestrictOf;             /* restricted class of each character        */
+    BitsLong    *ascTipBits;                /* scratch admissible states per taxon       */
     MrBFlt      *ascClassCount;             /* number of characters in each class       */
     MrBFlt      *ascCache;                  /* f of each class in each cond like slot   */
     size_t      *ascClassOffset, ascSlotSize;

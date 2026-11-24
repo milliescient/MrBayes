@@ -243,6 +243,9 @@ int AddDummyChars (void)
         m->exactAsc = NO;
         m->numAscClasses = 0;
         m->ascClassOf = NULL;
+        m->ascClassRestrict = NULL;
+        m->ascRestrictOf = NULL;
+        m->ascTipBits = NULL;
         if (mp->dataType == STANDARD && !strcmp(mp->parsModel,"No")
             && ((mp->coding == VARIABLE && ExactMkv() == YES) || (mp->coding == INFORMATIVE && ExactInformative() == YES)))
             {

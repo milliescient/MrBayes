@@ -7843,7 +7843,7 @@ static int AscMaxMasks (int k, int mode)
 |       background (empty set i) or is the singleton of set {s}
 |
 -----------------------------------------------------------------*/
-static void AscLeaf (int k, const AscMasks *om, int isMissing, MrBFlt *f)
+static void AscLeaf (int k, const AscMasks *om, int isMissing, BitsLong admits, MrBFlt *f)
 {
     int     s, n = om->n;
 
@@ -7855,10 +7855,12 @@ static void AscLeaf (int k, const AscMasks *om, int isMissing, MrBFlt *f)
             f[s*n] = 1.0;
         return;
         }
-    f[om->a*n] = 1.0;
+    /* admits == 0 leaves every state open */
+    if (admits == 0 || (admits & ((BitsLong)1 << om->a)))
+        f[om->a*n] = 1.0;
     if (n > 1)
         for (s=0; s<k; s++)
-            if (s != om->a)
+            if (s != om->a && (admits == 0 || (admits & ((BitsLong)1 << s))))
                 f[s*n + om->idx[1 << s]] = 1.0;
 }
 
@@ -7952,12 +7954,12 @@ static MrBFlt AscWeight (int k, int a, int mode, int mask, int nObs)
 |
 -----------------------------------------------------------------*/
 static void AscChildMsg (ModelInfo *m, int chain, TreeNode *q, int c, int k, const AscMasks *om, const char *miss,
-                         int tiOffset, MrBFlt *cache, size_t off, MrBFlt *f, MrBFlt *out)
+                         const BitsLong *tipBits, int tiOffset, MrBFlt *cache, size_t off, MrBFlt *f, MrBFlt *out)
 {
     CLFlt   *tiP;
 
     if (q->left == NULL || q->anc == NULL)
-        AscLeaf (k, om, miss[q->index], f);
+        AscLeaf (k, om, miss[q->index], tipBits ? tipBits[q->index] : 0, f);
     else
         f = cache + (size_t)m->condLikeIndex[chain][q->index] * m->ascSlotSize + off;
     tiP = m->tiProbs[m->tiProbsIndex[chain][q->index]] + m->tiIndex[c] + tiOffset;
@@ -7984,7 +7986,15 @@ static MrBFlt AscUnobservedProb (ModelInfo *m, int chain, int cl)
     Tree        *t;
     TreeNode    *p, *q;
     AscMasks    om;
+    const BitsLong *tb = NULL;
 
+    if (m->ascClassRestrict[cl] == YES)
+        {
+        int full = (1 << k) - 1;
+        for (i=0; i<numLocalTaxa; i++)
+            m->ascTipBits[i] = compMatrix[pos(i, m->compMatrixStart + c, compMatrixRowSize)] & full;
+        tb = m->ascTipBits;
+        }
     t = GetTree (m->brlens, chain, state[chain]);
     p = t->root->left;
     f = m->ascWork;
@@ -7995,6 +8005,9 @@ static MrBFlt AscUnobservedProb (ModelInfo *m, int chain, int cl)
     nBeta = (k == 2 && m->stateFreq->paramId != SYMPI_EQUAL) ? m->numBetaCats : 1;
     /* backgrounds are interchangeable only under the unordered model with equal frequencies */
     nA = (m->stateFreq->paramId == SYMPI_EQUAL && (k == 2 || m->cType[c] == UNORD)) ? 1 : k;
+    /* holding the tips to the observed states leaves the backgrounds no longer interchangeable */
+    if (tb != NULL)
+        nA = k;
     for (b=0; b<nBeta; b++)
         {
         bs = GetParamStdStateFreqs (m->stateFreq, chain, state[chain]) + m->bsIndex[c] + b*k;
@@ -8012,15 +8025,15 @@ static MrBFlt AscUnobservedProb (ModelInfo *m, int chain, int cl)
                     if (q == p || q->upDateCl == NO)
                         continue;
                     fq = m->ascCache + (size_t)m->condLikeIndex[chain][q->index] * m->ascSlotSize + off;
-                    AscChildMsg (m, chain, q->left,  c, k, &om, miss, tiOffset, m->ascCache, off, f, gl);
-                    AscChildMsg (m, chain, q->right, c, k, &om, miss, tiOffset, m->ascCache, off, f, gr);
+                    AscChildMsg (m, chain, q->left,  c, k, &om, miss, tb, tiOffset, m->ascCache, off, f, gl);
+                    AscChildMsg (m, chain, q->right, c, k, &om, miss, tb, tiOffset, m->ascCache, off, f, gr);
                     AscJoin (k, &om, gl, gr, fq);
                     }
-                AscChildMsg (m, chain, p->left,  c, k, &om, miss, tiOffset, m->ascCache, off, f, gl);
-                AscChildMsg (m, chain, p->right, c, k, &om, miss, tiOffset, m->ascCache, off, f, gr);
+                AscChildMsg (m, chain, p->left,  c, k, &om, miss, tb, tiOffset, m->ascCache, off, f, gl);
+                AscChildMsg (m, chain, p->right, c, k, &om, miss, tb, tiOffset, m->ascCache, off, f, gr);
                 if (t->isRooted == NO)
                     {
-                    AscLeaf (k, &om, miss[p->anc->index], f);
+                    AscLeaf (k, &om, miss[p->anc->index], tb ? tb[p->anc->index] : 0, f);
                     AscBranch (k, n, m->tiProbs[m->tiProbsIndex[chain][p->index]] + m->tiIndex[c] + tiOffset, f, ga);
                     }
                 for (i=0; i<n; i++)
@@ -8145,7 +8158,7 @@ static MrBFlt AscPatternLike (ModelInfo *m, int chain, int c, const BitsLong *ti
 -----------------------------------------------------------------*/
 static MrBFlt AscEnumeratedProb (ModelInfo *m, int chain, int cl)
 {
-    int         i, j, s, x, nPat, pat, two, lo, hi, cnt[MAX_STD_STATES],
+    int         i, j, s, x, nPat, pat, two, lo, hi, skip, cnt[MAX_STD_STATES],
                 c = m->ascClassChar[cl], k = m->ascClassK[cl], mode = m->ascClassMode[cl], nObs = m->ascClassObs[cl];
     char        *miss = m->ascClassMiss + cl*numLocalTaxa;
     BitsLong    *tips;
@@ -8160,16 +8173,21 @@ static MrBFlt AscEnumeratedProb (ModelInfo *m, int chain, int cl)
         {
         for (s=0; s<k; s++)
             cnt[s] = 0;
-        for (x=pat, i=0; i<numLocalTaxa; i++)
+        for (x=pat, i=0, skip=NO; i<numLocalTaxa; i++)
             {
             tips[i] = ((BitsLong)1 << k) - 1;
             if (miss[i] == NO)
                 {
                 cnt[x % k]++;
                 tips[i] = (BitsLong)1 << (x % k);
+                if (m->ascClassRestrict[cl] == YES
+                    && (compMatrix[pos(i, m->compMatrixStart + c, compMatrixRowSize)] & tips[i]) == 0)
+                    skip = YES;
                 x /= k;
                 }
             }
+        if (skip == YES)
+            continue;
         for (two=j=0, s=0; s<k; s++)
             {
             if (cnt[s] >= 2)
@@ -8214,18 +8232,22 @@ static int BuildAscClasses (ModelInfo *m)
     BitsLong    v;
 
     m->ascClassOf = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->ascClassChar = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->ascClassK = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->ascClassMode = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->ascClassObs = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
-    m->ascClassMiss = (char *) SafeMalloc ((size_t)m->numChars * numLocalTaxa * sizeof(char));
-    m->ascClassCount = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
-    m->ascClassOffset = (size_t *) SafeMalloc ((size_t)m->numChars * sizeof(size_t));
+    m->ascClassChar = (int *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(int));
+    m->ascClassK = (int *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(int));
+    m->ascClassMode = (int *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(int));
+    m->ascClassObs = (int *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(int));
+    m->ascClassMiss = (char *) SafeMalloc ((size_t)(2*m->numChars) * numLocalTaxa * sizeof(char));
+    m->ascClassRestrict = (char *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(char));
+    m->ascRestrictOf = (int *) SafeMalloc ((size_t)m->numChars * sizeof(int));
+    m->ascTipBits = (BitsLong *) SafeMalloc ((size_t)numLocalTaxa * sizeof(BitsLong));
+    m->ascClassCount = (MrBFlt *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(MrBFlt));
+    m->ascClassOffset = (size_t *) SafeMalloc ((size_t)(2*m->numChars) * sizeof(size_t));
     m->ascWork = (MrBFlt *) SafeMalloc ((size_t)(2*numLocalTaxa + 2) * ASC_SLOT * sizeof(MrBFlt));
     m->ascSiteLike = (MrBFlt *) SafeMalloc ((size_t)m->numChars * sizeof(MrBFlt));
     miss = (char *) SafeMalloc ((size_t)numLocalTaxa * sizeof(char));
     if (!m->ascClassOf || !m->ascClassChar || !m->ascClassK || !m->ascClassMode || !m->ascClassObs || !m->ascClassMiss
-        || !m->ascClassCount || !m->ascClassOffset || !m->ascWork || !m->ascSiteLike || !miss)
+        || !m->ascClassCount || !m->ascClassOffset || !m->ascWork || !m->ascSiteLike || !miss
+        || !m->ascClassRestrict || !m->ascRestrictOf || !m->ascTipBits)
         return ERROR;
     m->numAscClasses = 0;
     for (c=0; c<m->numChars; c++)
@@ -8262,6 +8284,26 @@ static int BuildAscClasses (ModelInfo *m)
             m->numAscClasses++;
             }
         m->ascClassOf[c] = j;
+        m->ascClassRestrict[j] = NO;
+        m->ascRestrictOf[c] = -1;
+        for (i=0; i<numLocalTaxa; i++)
+            {
+            v = compMatrix[pos(i, col, compMatrixRowSize)] & full;
+            if (miss[i] == NO && (v & (v - 1)) != 0)
+                break;
+            }
+        /* a cell admitting some but not all states leaves excluded resolutions in the likelihood */
+        if (i < numLocalTaxa)
+            {
+            j = m->numAscClasses++;
+            m->ascClassChar[j] = c;
+            m->ascClassK[j] = k;
+            m->ascClassMode[j] = mode;
+            m->ascClassObs[j] = nObs;
+            m->ascClassRestrict[j] = YES;
+            memcpy (m->ascClassMiss + j*numLocalTaxa, miss, numLocalTaxa);
+            m->ascRestrictOf[c] = j;
+            }
         }
     free (miss);
     m->ascSlotSize = 0;
@@ -8271,10 +8313,22 @@ static int BuildAscClasses (ModelInfo *m)
         c = m->ascClassChar[j];
         k = m->ascClassK[j];
         nA = (m->stateFreq->paramId == SYMPI_EQUAL && (k == 2 || m->cType[c] == UNORD)) ? 1 : k;
+        if (m->ascClassRestrict[j] == YES)
+            nA = k;
         nBeta = (k == 2 && m->stateFreq->paramId != SYMPI_EQUAL) ? m->numBetaCats : 1;
         n = AscMaxMasks (k, m->ascClassMode[j]);
         m->ascClassOffset[j] = m->ascSlotSize;
         m->ascSlotSize += (size_t)nBeta * m->numRateCats * nA * k * n;
+        }
+    if (getenv ("MB_EXACT_COST"))
+        {
+        int nr = 0;
+        for (j=0; j<m->numAscClasses; j++)
+            if (m->ascClassRestrict[j] == YES)
+                nr++;
+        MrBayesPrint ("%s   MB_EXACT_COST classes %d (restricted %d) slot %.0f cache %.1f MB\n", spacer,
+            m->numAscClasses, nr, (double)m->ascSlotSize,
+            (double)m->numCondLikes * m->ascSlotSize * sizeof(MrBFlt) / 1048576.0);
         }
     m->ascCache = (MrBFlt *) SafeMalloc ((size_t)m->numCondLikes * m->ascSlotSize * sizeof(MrBFlt));
     if (!m->ascCache)
@@ -8293,9 +8347,9 @@ static int BuildAscClasses (ModelInfo *m)
 |       enumeration and prints mismatches
 |
 -----------------------------------------------------------------*/
-static MrBFlt AscCorrection (ModelInfo *m, int chain)
+static MrBFlt AscCorrection (ModelInfo *m, int chain, CLFlt *nSitesOfPat)
 {
-    int         cl;
+    int         c, cl;
     MrBFlt      pObserved, pU, corr = 0.0;
     static int  check = -1, checked = 0;
 
@@ -8334,6 +8388,27 @@ static MrBFlt AscCorrection (ModelInfo *m, int chain)
         if (pObserved < LIKE_EPSILON)
             pObserved = LIKE_EPSILON;
         corr += log(pObserved) * m->ascClassCount[cl];
+        }
+    for (c=m->numDummyChars; c<m->numChars; c++)
+        {
+        MrBFlt pRestricted, like;
+        if (m->ascRestrictOf[c] < 0)
+            continue;
+        pRestricted = AscUnobservedProb (m, chain, m->ascRestrictOf[c]);
+        like = m->ascSiteLike[c];
+        if (check == YES)
+            {
+            MrBFlt pEnum = AscEnumeratedProb (m, chain, m->ascRestrictOf[c]);
+            MrBFlt rel = (pEnum > 0.0) ? fabs (pRestricted - pEnum) / pEnum : 0.0;
+            MrBayesPrint ("%s   MB_EXACT_RESTRICT%s char %d (k %d mode %d nObs %d): recursion %.15e enumeration %.15e like %.15e shift %.6f\n",
+                spacer, (rel > 1e-10) ? " MISMATCH" : "", c, m->ascClassK[m->ascRestrictOf[c]],
+                m->ascClassMode[m->ascRestrictOf[c]], m->ascClassObs[m->ascRestrictOf[c]],
+                pRestricted, pEnum, like,
+                (like > 0.0 && pRestricted < like) ? log1p (-pRestricted / like) : 0.0);
+            }
+        if (pRestricted <= 0.0 || like <= 0.0 || pRestricted >= like)
+            continue;
+        corr -= log1p (-pRestricted / like) * nSitesOfPat[c];
         }
     return corr;
 }
@@ -8540,7 +8615,7 @@ int Likelihood_Std (TreeNode *p, int division, int chain, MrBFlt *lnL, int which
 
     /* correct for absent characters */
     if (m->exactAsc != NO)
-        (*lnL) -= AscCorrection (m, chain);
+        (*lnL) -= AscCorrection (m, chain, nSitesOfPat);
     else
         (*lnL) -=  log(pObserved) * (m->numUncompressedChars);
 
